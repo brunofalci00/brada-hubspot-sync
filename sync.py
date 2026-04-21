@@ -63,6 +63,7 @@ DEAL_PROPERTIES = [
     "status_contato",
     "lei_principal",  # criado em E1 - puxa do HubSpot, argmax vira fallback
     "linha_de_imposto_categoria",  # criado em E1 (IR/ICMS/ISS)
+    "cnpj_do_incentivador",  # criado em E1-bis - CNPJ da filial/PDV; vazio = fallback Company.cnpj
     # 11 campos de valor por lei (fonte de financiamento)
     "valor_lei_rouanet",
     "valor_lei_do_esporte",  # esporte federal
@@ -266,6 +267,30 @@ def _parse_hs_datetime(s):
         return None
 
 
+def _normalize_cnpj(s):
+    """Remove pontuacao (pontos/tracos/barras/espacos) — retorna so digitos.
+
+    Motivo: CNPJs no HubSpot estao em formatos mistos (ex: '35050782000158',
+    '61.549812000185', '57.688.3920001-40'). Sem normalizar, comparacoes entre
+    Deal.cnpj_do_incentivador e Company.cnpj dao falso-positivo de divergencia.
+    """
+    if not s:
+        return ""
+    return "".join(ch for ch in str(s) if ch.isdigit())
+
+
+def resolve_cnpj(deal_props, company_props):
+    """Retorna CNPJ efetivo preferindo Deal.cnpj_do_incentivador; fallback Company.cnpj.
+
+    Helper do E3-bis (ata backlog Ivan 20/04, Gap A): clientes com multiplas
+    filiais/PDVs (Casa do Alemao, Aquario, Cielo) precisam rastrear CNPJ especifico
+    do deal, nao so o da matriz Company.
+    """
+    deal_cnpj = (deal_props.get("cnpj_do_incentivador") or "").strip()
+    company_cnpj = (company_props.get("cnpj") or "").strip()
+    return deal_cnpj or company_cnpj
+
+
 # ===================================================
 # ENRIQUECIMENTO
 # ===================================================
@@ -347,6 +372,12 @@ def enrich(deal, stages, deal_to_company, companies):
     company_id = deal_to_company.get(deal_id)
     comp = companies.get(str(company_id), {}) if company_id else {}
 
+    # CNPJ efetivo (E3-bis): preferir Deal.cnpj_do_incentivador, fallback Company.cnpj.
+    # Exporta bruto pra rastreabilidade e normalizado (so digitos) pro Looker agregar.
+    cnpj_incentivador_bruto = (p.get("cnpj_do_incentivador") or "").strip()
+    cnpj_efetivo_bruto = resolve_cnpj(p, comp)
+    cnpj_efetivo_normalizado = _normalize_cnpj(cnpj_efetivo_bruto)
+
     produto_hubspot_value = p.get("produto") or ""
     produto_hubspot_label = PRODUTO_PICKLIST_VALUE_TO_LABEL.get(produto_hubspot_value, "")
     produto = produto_hubspot_label or ("Match" if pipeline_nome == "Incentivador" else "Elaboracao")
@@ -416,6 +447,8 @@ def enrich(deal, stages, deal_to_company, companies):
         "company_id": company_id or "",
         "company_name": comp.get("name", ""),
         "company_cnpj": comp.get("cnpj", ""),
+        "cnpj_incentivador": cnpj_incentivador_bruto,  # Deal.cnpj_do_incentivador (bruto)
+        "cnpj_efetivo": cnpj_efetivo_normalizado,  # resolvido + normalizado (so digitos) - usar no Looker
         "company_origem": comp.get("origem", ""),
         "company_industry": comp.get("industry", ""),
         "company_state": comp.get("state", "") or "(em preenchimento)",
