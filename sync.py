@@ -108,25 +108,16 @@ LEI_TO_CATEGORIA = {
     "Cultura Municipal": "ISS",
 }
 
-# Picklist do HubSpot retorna o value interno na Search API (ex: "rouanet"),
-# nao o label ("Rouanet"). Convertemos pra manter output consistente com argmax.
-LEI_PICKLIST_VALUE_TO_LABEL = {
-    "rouanet": "Rouanet",
-    "esporte_federal": "Esporte Federal",
-    "esporte_estadual": "Esporte Estadual",
-    "lei_do_bem": "Lei do Bem",
-    "cultura_estadual": "Cultura Estadual",
-    "cultura_municipal": "Cultura Municipal",
-    "fia": "FIA (Crianca e Adolescente)",
-    "fundo_idoso": "Fundo do Idoso",
-    "reciclagem": "Reciclagem",
-    "pronas": "PRONAS",
-    "pronon": "PRONON",
-}
-LEI_LABEL_TO_PICKLIST_VALUE = {v: k for k, v in LEI_PICKLIST_VALUE_TO_LABEL.items()}
+# E1 criou picklists com value==label (setup_hubspot_fields.py usa _opts()
+# que retorna {"value": l, "label": l}). Nao ha normalizacao lowercase a fazer
+# nem no read nem no write.
+# Descoberto em E2 (19/04): PATCHs do patch_derived_back estavam falhando
+# silenciosamente desde 14/04 porque o mapa anterior forcava lowercase.
+LEI_PICKLIST_VALUE_TO_LABEL = {lbl: lbl for lbl in LEIS_MAP.values()}
+LEI_LABEL_TO_PICKLIST_VALUE = {lbl: lbl for lbl in LEIS_MAP.values()}
 
-CATEGORIA_PICKLIST_VALUE_TO_LABEL = {"ir": "IR", "icms": "ICMS", "iss": "ISS"}
-CATEGORIA_LABEL_TO_PICKLIST_VALUE = {v: k for k, v in CATEGORIA_PICKLIST_VALUE_TO_LABEL.items()}
+CATEGORIA_PICKLIST_VALUE_TO_LABEL = {"IR": "IR", "ICMS": "ICMS", "ISS": "ISS"}
+CATEGORIA_LABEL_TO_PICKLIST_VALUE = {"IR": "IR", "ICMS": "ICMS", "ISS": "ISS"}
 
 # Normalizacao cosmetica do campo produto (value HubSpot -> label).
 # Mantem output do Sheet consistente independente de preenchimento manual vs. inferencia.
@@ -474,8 +465,8 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, lookback_hours=2):
         lei_value_novo = LEI_LABEL_TO_PICKLIST_VALUE.get(lei_derivada, "")
         categoria_value_novo = CATEGORIA_LABEL_TO_PICKLIST_VALUE.get(categoria_derivada, "")
 
-        lei_atual = (props.get("lei_principal") or "").lower()
-        categoria_atual = (props.get("linha_de_imposto_categoria") or "").lower()
+        lei_atual = (props.get("lei_principal") or "").strip()
+        categoria_atual = (props.get("linha_de_imposto_categoria") or "").strip()
 
         patch_payload = {}
         if lei_value_novo and lei_value_novo != lei_atual:
