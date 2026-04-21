@@ -525,6 +525,47 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, lookback_hours=2):
     return atualizados
 
 
+def patch_default_trabalhado_por(raw_deals):
+    """Default 'trabalhado_por = Executivo Brada' em deals com o campo vazio.
+
+    Ata backlog Ivan 20/04 (Gap D): Ivan confirmou na reuniao que trabalhado_por
+    deve vir preenchido no deal novo. PATCH via defaultValue da property nao
+    funciona no Starter (HubSpot aceita body em silencio e ignora). Fallback:
+    setar aqui no cron horario ate a Automatize entrar e patchar "Automatize"
+    via API propria pros leads dela.
+
+    Regra clássica "nao sobrescrever": se trabalhado_por ja tem valor, skip.
+    Usa batch update (100 por call) pra eficiencia.
+    """
+    vazios = [
+        d for d in raw_deals
+        if not (d.get("properties", {}).get("trabalhado_por") or "").strip()
+    ]
+    if not vazios:
+        print("patch_default_trabalhado_por: 0 deals com campo vazio")
+        return 0
+
+    atualizados = 0
+    erros = 0
+    for i in range(0, len(vazios), 100):
+        chunk = vazios[i:i + 100]
+        body = {
+            "inputs": [
+                {"id": d["id"], "properties": {"trabalhado_por": "Executivo Brada"}}
+                for d in chunk
+            ]
+        }
+        r = req("POST", "/crm/v3/objects/deals/batch/update", json=body)
+        if r.status_code in (200, 207):
+            atualizados += len(chunk)
+        else:
+            erros += len(chunk)
+            print(f"BATCH trabalhado_por ERRO chunk {i}: {r.status_code} {r.text[:200]}")
+
+    print(f"patch_default_trabalhado_por: {atualizados} deals default aplicado, {erros} erros")
+    return atualizados
+
+
 # ===================================================
 # GOOGLE SHEETS
 # ===================================================
@@ -604,6 +645,10 @@ def main():
     # de volta pro HubSpot, limitado aos deals modificados nas ultimas 2h.
     raw_deals_by_id = {d["id"]: d for d in deals}
     patch_derived_back(enriched, raw_deals_by_id, lookback_hours=2)
+
+    # Default trabalhado_por="Executivo Brada" em deals com campo vazio (Gap D,
+    # ata Ivan 20/04). Starter nao suporta defaultValue nativo pra picklist custom.
+    patch_default_trabalhado_por(deals)
 
     header = list(enriched[0].keys())
     # Converter dicts em listas na ordem do header

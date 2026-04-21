@@ -2,3 +2,5 @@ errors.csv
 run_log.txt
 __pycache__/
 *.pyc
+logs/
+SETUP_BRUNO.md

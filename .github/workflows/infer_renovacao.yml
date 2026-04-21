@@ -1,0 +1,53 @@
+name: Infer valor diagnostico renovacao
+
+on:
+  schedule:
+    - cron: '15 * * * *'  # A cada hora (15min depois do sync.yml pra evitar concorrência de PATCH)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de execução'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - execute
+
+jobs:
+  infer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: pip install requests
+
+      - name: Rodar infer (scheduled = execute)
+        if: github.event_name == 'schedule'
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: python infer_valor_diagnostico_renovacao.py --execute
+
+      - name: Rodar infer (manual)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: |
+          if [ "${{ inputs.mode }}" = "execute" ]; then
+            python infer_valor_diagnostico_renovacao.py --execute
+          else
+            python infer_valor_diagnostico_renovacao.py
+          fi
+
+      - name: Upload CSV log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renovacao-log-${{ github.run_id }}
+          path: logs/renovacao_*.csv
+          if-no-files-found: ignore
