@@ -1,8 +1,4 @@
-service-account-key.json
-*.pyc
+errors.csv
+run_log.txt
 __pycache__/
-.env
-.venv/
-.idea/
-.vscode/
-SETUP_BRUNO.md
+*.pyc
