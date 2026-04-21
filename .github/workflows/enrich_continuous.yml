@@ -1,0 +1,59 @@
+name: Enrich companies continuous
+
+on:
+  schedule:
+    - cron: '30 * * * *'  # A cada hora (offset 30min pra não colidir com sync :00 e infer_renovacao :15)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de execução'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - execute
+      lookback_hours:
+        description: 'Janela de lookback (horas)'
+        required: false
+        default: '2'
+        type: string
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: pip install requests
+
+      - name: Rodar enrich incremental (scheduled = execute)
+        if: github.event_name == 'schedule'
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: python enrich_once.py --mode=incremental --lookback-hours=2
+
+      - name: Rodar enrich incremental (manual)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: |
+          FLAGS="--mode=incremental --lookback-hours=${{ inputs.lookback_hours }}"
+          if [ "${{ inputs.mode }}" = "execute" ]; then
+            python enrich_once.py $FLAGS
+          else
+            python enrich_once.py $FLAGS --dry-run
+          fi
+
+      - name: Upload errors CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enrich-continuous-${{ github.run_id }}
+          path: errors.csv
+          if-no-files-found: ignore

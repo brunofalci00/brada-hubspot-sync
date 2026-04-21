@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import time
+from collections import defaultdict
 
 import gspread
 import requests
@@ -463,22 +464,58 @@ def enrich(deal, stages, deal_to_company, companies):
 # PATCH BACK (lei_principal / linha_de_imposto_categoria)
 # ===================================================
 
-def patch_derived_back(deals_enriched, raw_deals_by_id, lookback_hours=2):
+STAGES_GANHO = {"1253324968", "1253441207"}  # Incentivador + Proponente
+PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
+
+
+def _build_primeiro_match_map(raw_deals, deal_to_company):
+    """Retorna {company_id: [(closedate, deal_id), ...]} ordenado por closedate asc.
+
+    Pré-computa histórico de Ganhos por Company pra derivar e_o_primeiro_match
+    sem queries extras. Deals sem closedate ou sem Company associada são ignorados.
+    """
+    by_company = defaultdict(list)
+    for d in raw_deals:
+        props = d.get("properties", {}) or {}
+        if props.get("dealstage") not in STAGES_GANHO:
+            continue
+        cid = deal_to_company.get(d["id"])
+        if not cid:
+            continue
+        closedate = _parse_hs_datetime(props.get("closedate", ""))
+        if not closedate:
+            continue
+        by_company[cid].append((closedate, d["id"]))
+    for cid in by_company:
+        by_company[cid].sort()
+    return by_company
+
+
+def patch_derived_back(deals_enriched, raw_deals_by_id, deal_to_company=None,
+                       primeiro_match_map=None, lookback_hours=2):
     """
     Captura movimento continuo do comercial: quando executivo muda valor_lei_X,
     a derivacao argmax/categoria no enrich() muda. Esta funcao propaga de volta
     pro HubSpot, so em deals modificados nas ultimas N horas (reduz blast radius
     e carga na API).
 
+    Também aplica defaults (E6 Onda A):
+    - produto: "Match"/"Elaboração" por pipeline (só se vazio)
+    - e_o_primeiro_match: true/false por histórico Ganho da Company (só se null)
+
     Regras:
     - So faz PATCH se derivacao ≠ valor atual no HubSpot
     - Nunca sobrescreve valor existente com '(sem ...)' / vazio
     - Converte label interno ('Rouanet') pro picklist value do HubSpot ('rouanet')
     """
+    deal_to_company = deal_to_company or {}
+    primeiro_match_map = primeiro_match_map or {}
     agora = datetime.datetime.now(datetime.timezone.utc)
     cutoff = agora - datetime.timedelta(hours=lookback_hours)
     atualizados = 0
     erros = 0
+    produto_defaults = 0
+    primeiro_match_defaults = 0
 
     for enriched in deals_enriched:
         deal_id = enriched["deal_id"]
@@ -507,6 +544,28 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, lookback_hours=2):
         if categoria_value_novo and categoria_value_novo != categoria_atual:
             patch_payload["linha_de_imposto_categoria"] = categoria_value_novo
 
+        # produto default por pipeline (E6 Onda A)
+        if not (props.get("produto") or "").strip():
+            produto_default = PIPELINE_TO_PRODUTO.get(props.get("pipeline", ""))
+            if produto_default:
+                patch_payload["produto"] = produto_default
+                produto_defaults += 1
+
+        # e_o_primeiro_match derivado do histórico Ganho da Company (E6 Onda A).
+        # Sem closedate no deal atual: assume "mais recente" (trata qualquer Ganho
+        # da Company como "anterior") — evita false positives de primeiro match.
+        if props.get("e_o_primeiro_match") in (None, ""):
+            cid = deal_to_company.get(deal_id)
+            if cid:
+                ganhos_da_company = primeiro_match_map.get(cid, [])
+                closedate_atual = _parse_hs_datetime(props.get("closedate", ""))
+                ganhos_anteriores = [
+                    (cd, did) for (cd, did) in ganhos_da_company
+                    if did != deal_id and (closedate_atual is None or cd < closedate_atual)
+                ]
+                patch_payload["e_o_primeiro_match"] = "false" if ganhos_anteriores else "true"
+                primeiro_match_defaults += 1
+
         if not patch_payload:
             continue
 
@@ -521,7 +580,10 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, lookback_hours=2):
             erros += 1
             print(f"PATCH ERRO deal {deal_id}: {r.status_code} {r.text[:200]}")
 
-    print(f"PATCH back: {atualizados} deals atualizados, {erros} erros (lookback {lookback_hours}h)")
+    print(
+        f"PATCH back: {atualizados} deals atualizados, {erros} erros (lookback {lookback_hours}h) "
+        f"| produto defaults: {produto_defaults} | primeiro_match defaults: {primeiro_match_defaults}"
+    )
     return atualizados
 
 
@@ -642,9 +704,16 @@ def main():
     enriched = [enrich(d, stages, deal_to_company, companies) for d in deals]
 
     # PATCH back: propaga derivacoes (lei_principal / linha_de_imposto_categoria)
-    # de volta pro HubSpot, limitado aos deals modificados nas ultimas 2h.
+    # + defaults produto/e_o_primeiro_match (E6 Onda A), limitado aos deals
+    # modificados nas ultimas 2h.
     raw_deals_by_id = {d["id"]: d for d in deals}
-    patch_derived_back(enriched, raw_deals_by_id, lookback_hours=2)
+    primeiro_match_map = _build_primeiro_match_map(deals, deal_to_company)
+    patch_derived_back(
+        enriched, raw_deals_by_id,
+        deal_to_company=deal_to_company,
+        primeiro_match_map=primeiro_match_map,
+        lookback_hours=2,
+    )
 
     # Default trabalhado_por="Executivo Brada" em deals com campo vazio (Gap D,
     # ata Ivan 20/04). Starter nao suporta defaultValue nativo pra picklist custom.

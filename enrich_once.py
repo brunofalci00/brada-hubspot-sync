@@ -31,7 +31,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
@@ -219,18 +219,29 @@ def setup_cnae_property(dry_run=False):
 
 COMPANY_PROPS_FETCH = [
     "name", "cnpj", "state", "industry", "city", "razao_social", "cnae_descricao",
+    "phone", "address", "zip",  # E6 Onda A — payload BrasilAPI expandido
 ]
 
 
-def fetch_companies_com_cnpj():
-    """Busca paginada de companies com cnpj preenchido."""
+def fetch_companies_com_cnpj(lookback_hours=None):
+    """Busca paginada de companies com cnpj preenchido.
+
+    Se lookback_hours é setado (modo incremental), filtra por hs_lastmodifieddate
+    nas últimas N horas pra reduzir volume no cron contínuo.
+    """
     results = []
     after = None
+    filters = [{"propertyName": "cnpj", "operator": "HAS_PROPERTY"}]
+    if lookback_hours:
+        cutoff_ms = int((datetime.utcnow() - timedelta(hours=lookback_hours)).timestamp() * 1000)
+        filters.append({
+            "propertyName": "hs_lastmodifieddate",
+            "operator": "GT",
+            "value": cutoff_ms,
+        })
     while True:
         body = {
-            "filterGroups": [{
-                "filters": [{"propertyName": "cnpj", "operator": "HAS_PROPERTY"}]
-            }],
+            "filterGroups": [{"filters": filters}],
             "properties": COMPANY_PROPS_FETCH,
             "limit": 100,
         }
@@ -250,8 +261,8 @@ def fetch_companies_com_cnpj():
 
 
 def precisa_enrich(props):
-    """Company precisa de enrichment se algum dos 4 campos esta vazio."""
-    for k in ("state", "city", "razao_social", "cnae_descricao"):
+    """Company precisa de enrichment se algum dos 7 campos esta vazio (E6 Onda A)."""
+    for k in ("state", "city", "razao_social", "cnae_descricao", "phone", "address", "zip"):
         if not (props.get(k) or "").strip():
             return True
     return False
@@ -287,9 +298,11 @@ def brasilapi_lookup(cnpj_limpo):
     return None, "esgotou tentativas"
 
 
-def frente_1_companies(dry_run=False, limit=None):
-    companies = fetch_companies_com_cnpj()
-    print(f"[frente 1] companies com cnpj: {len(companies)}")
+def frente_1_companies(dry_run=False, limit=None, lookback_hours=None):
+    companies = fetch_companies_com_cnpj(lookback_hours=lookback_hours)
+    label = f"[frente 1{' incremental' if lookback_hours else ''}]"
+    print(f"{label} companies com cnpj: {len(companies)}"
+          + (f" (lookback {lookback_hours}h)" if lookback_hours else ""))
     candidatas = [c for c in companies if precisa_enrich(c.get("properties", {}))]
     print(f"[frente 1] candidatas a enrichment: {len(candidatas)}")
 
@@ -325,6 +338,22 @@ def frente_1_companies(dry_run=False, limit=None):
             patch["razao_social"] = info["razao_social"]
         if not (props.get("cnae_descricao") or "").strip() and info.get("cnae_fiscal_descricao"):
             patch["cnae_descricao"] = info["cnae_fiscal_descricao"]
+
+        # E6 Onda A — payload BrasilAPI expandido (regra "nao sobrescrever" mantida)
+        if not (props.get("phone") or "").strip() and info.get("ddd_telefone_1"):
+            patch["phone"] = info["ddd_telefone_1"]
+        logradouro = (info.get("logradouro") or "").strip()
+        numero = (info.get("numero") or "").strip()
+        if not (props.get("address") or "").strip() and logradouro:
+            if numero and numero.upper() != "S/N":
+                patch["address"] = f"{logradouro}, {numero}"
+            else:
+                patch["address"] = logradouro
+        if not (props.get("zip") or "").strip() and info.get("cep"):
+            patch["zip"] = info["cep"]  # BrasilAPI devolve sem dash; HubSpot aceita
+        # name fallback: SÓ se name atual vazio E fantasia preenchido
+        if not (props.get("name") or "").strip() and (info.get("nome_fantasia") or "").strip():
+            patch["name"] = info["nome_fantasia"]
 
         if not patch:
             continue
@@ -880,10 +909,30 @@ def main():
     parser.add_argument("--verify", action="store_true", help="so conta candidatas, sem chamar BrasilAPI nem PATCHs")
     parser.add_argument("--limit-companies", type=int, default=None, help="limita frente 1 a N companies (teste)")
     parser.add_argument("--skip-frente", choices=["1", "2", "3", "4"], action="append", default=[], help="pula uma frente")
+    parser.add_argument("--mode", choices=["one-shot", "incremental"], default="one-shot",
+                        help="one-shot roda todas frentes; incremental só frente 1 filtrando por hs_lastmodifieddate")
+    parser.add_argument("--lookback-hours", type=int, default=2,
+                        help="janela de hs_lastmodifieddate no modo incremental (horas)")
     args = parser.parse_args()
 
     dry = args.dry_run or args.verify
-    print(f"=== E2 enrichment one-shot (dry={dry}, verify={args.verify}) ===")
+    print(f"=== enrich (mode={args.mode} dry={dry} verify={args.verify}) ===")
+
+    # Modo incremental (E6 Onda A) — só frente 1 com filtro lookback.
+    # Skip setup_cnae_property (já aplicado em E2; a property existe).
+    if args.mode == "incremental":
+        res1 = frente_1_companies(
+            dry_run=dry,
+            limit=args.limit_companies,
+            lookback_hours=args.lookback_hours,
+        )
+        print(
+            f"[incremental] scanned={res1['scanned']} cand={res1['candidatas']} "
+            f"enriched={res1['enriched']} skipped_cnpj={res1['skipped_cnpj_invalido']} "
+            f"failed={res1['failed']}"
+        )
+        close_errors()
+        return
 
     setup_cnae_property(dry_run=dry)
 
