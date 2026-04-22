@@ -121,6 +121,47 @@ LEI_LABEL_TO_PICKLIST_VALUE = {lbl: lbl for lbl in LEIS_MAP.values()}
 CATEGORIA_PICKLIST_VALUE_TO_LABEL = {"IR": "IR", "ICMS": "ICMS", "ISS": "ISS"}
 CATEGORIA_LABEL_TO_PICKLIST_VALUE = {"IR": "IR", "ICMS": "ICMS", "ISS": "ISS"}
 
+# NORMALIZACAO UF (E4, 22/04)
+# Motivo: Company.state no HubSpot tem formatos mistos (BrasilAPI retorna sigla;
+# preenchimento manual usa nome completo com/sem acento + typos reais vistos
+# no Sheet 22/04: "Rio de Grande so Sul"). Normalizar antes de escrever no Sheet
+# previne bar chart com 2+ barras para mesmo estado.
+UF_SIGLAS = {
+    "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA",
+    "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN",
+    "RS", "RO", "RR", "SC", "SP", "SE", "TO",
+}
+UF_NORMALIZE = {
+    "acre": "AC",
+    "alagoas": "AL",
+    "amapa": "AP", "amapá": "AP",
+    "amazonas": "AM",
+    "bahia": "BA",
+    "ceara": "CE", "ceará": "CE",
+    "distrito federal": "DF",
+    "espirito santo": "ES", "espírito santo": "ES",
+    "goias": "GO", "goiás": "GO",
+    "maranhao": "MA", "maranhão": "MA",
+    "mato grosso": "MT",
+    "mato grosso do sul": "MS",
+    "minas gerais": "MG",
+    "para": "PA", "pará": "PA",
+    "paraiba": "PB", "paraíba": "PB",
+    "parana": "PR", "paraná": "PR",
+    "pernambuco": "PE",
+    "piaui": "PI", "piauí": "PI",
+    "rio de janeiro": "RJ",
+    "rio grande do norte": "RN",
+    "rio grande do sul": "RS",
+    "rio de grande so sul": "RS",  # typo real visto no Sheet 22/04
+    "rondonia": "RO", "rondônia": "RO",
+    "roraima": "RR",
+    "santa catarina": "SC",
+    "sao paulo": "SP", "são paulo": "SP", "s. paulo": "SP",
+    "sergipe": "SE",
+    "tocantins": "TO",
+}
+
 # Normalizacao cosmetica do campo produto (value HubSpot -> label).
 # Mantem output do Sheet consistente independente de preenchimento manual vs. inferencia.
 PRODUTO_PICKLIST_VALUE_TO_LABEL = {
@@ -292,6 +333,30 @@ def resolve_cnpj(deal_props, company_props):
     return deal_cnpj or company_cnpj
 
 
+def _normalize_uf(s):
+    """Normaliza UF para sigla de 2 letras.
+
+    Regras em ordem:
+    1. Input vazio -> retorna ""
+    2. Input ja e sigla UF valida (ex: "SP", "sp") -> uppercase
+    3. Input e nome completo mapeavel (lowercase compared) -> sigla
+    4. Nao mapeou -> retorna valor original preservando info
+
+    Descoberto 22/04 montando Widget 2B (Receita por Estado): BrasilAPI popula
+    Company.state com sigla; preenchimento manual dos executivos usa nome completo
+    com/sem acento + typos. Sem normalizar, bar chart por UF no Looker mostra
+    mesmo estado em multiplas barras.
+    """
+    if not s:
+        return ""
+    raw = str(s).strip()
+    if not raw:
+        return ""
+    if raw.upper() in UF_SIGLAS:
+        return raw.upper()
+    return UF_NORMALIZE.get(raw.lower(), raw)
+
+
 # ===================================================
 # ENRIQUECIMENTO
 # ===================================================
@@ -452,7 +517,7 @@ def enrich(deal, stages, deal_to_company, companies):
         "cnpj_efetivo": cnpj_efetivo_normalizado,  # resolvido + normalizado (so digitos) - usar no Looker
         "company_origem": comp.get("origem", ""),
         "company_industry": comp.get("industry", ""),
-        "company_state": comp.get("state", "") or "(em preenchimento)",
+        "company_state": _normalize_uf(comp.get("state", "")) or "(em preenchimento)",
         "company_municipio": comp.get("municipio", ""),
         "company_razao_social": comp.get("razao_social", ""),
         # Link
