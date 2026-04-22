@@ -164,12 +164,21 @@ UF_NORMALIZE = {
 
 # Normalizacao cosmetica do campo produto (value HubSpot -> label).
 # Mantem output do Sheet consistente independente de preenchimento manual vs. inferencia.
+# Pos E1 (value==label), HubSpot usa valores com acento/cedilha. Manter chaves lowercase
+# como fallback pra valores legados eventuais, mas as chaves com acento sao as canonicas.
 PRODUTO_PICKLIST_VALUE_TO_LABEL = {
+    # Canonico pos-E1 (value==label)
+    "Match": "Match",
+    "Elaboração": "Elaboração",
+    "AprovAI": "AprovAI",
+    "Customização": "Customização",
+    "Prestação": "Prestação",
+    # Legado lowercase (fallback)
     "match": "Match",
-    "elaboracao": "Elaboracao",
+    "elaboracao": "Elaboração",
     "aprovai": "AprovAI",
-    "customizacao": "Customizacao",
-    "prestacao": "Prestacao",
+    "customizacao": "Customização",
+    "prestacao": "Prestação",
 }
 
 COMPANY_PROPERTIES = [
@@ -446,7 +455,7 @@ def enrich(deal, stages, deal_to_company, companies):
 
     produto_hubspot_value = p.get("produto") or ""
     produto_hubspot_label = PRODUTO_PICKLIST_VALUE_TO_LABEL.get(produto_hubspot_value, "")
-    produto = produto_hubspot_label or ("Match" if pipeline_nome == "Incentivador" else "Elaboracao")
+    produto = produto_hubspot_label or ("Match" if pipeline_nome == "Incentivador" else "Elaboração")
     produto_foi_inferido = 0 if produto_hubspot_value else 1
 
     return {
