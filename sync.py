@@ -575,6 +575,17 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
 STAGES_GANHO = {"1253324968", "1253441207"}  # Incentivador + Proponente
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
 
+# Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
+# Picklists unificados: os valores em PASSTHROUGH_VALUES existem nos dois campos
+# (Deal.origem_lead e Company.origem) e podem ser propagados 1:1.
+# Valor ambiguo "Linkedin / Whatsapp / Site" NAO entra aqui — Ivan/Bruno
+# classificam caso a caso em `origem_lead` (pode ser LinkedIn, WhatsApp ou Site).
+ORIGEM_LEAD_PASSTHROUGH = {
+    "LinkedIn", "WhatsApp", "Site", "Feira/Evento",
+    "Indicação Interna", "Indicação Externa",
+    "Automatize direto", "DigiSAC (Proponente)", "Outros",
+}
+
 
 def _build_primeiro_match_map(raw_deals, deal_to_company):
     """Retorna {company_id: [(closedate, deal_id), ...]} ordenado por closedate asc.
@@ -624,6 +635,7 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, deal_to_company=None,
     erros = 0
     produto_defaults = 0
     primeiro_match_defaults = 0
+    origem_lead_defaults = 0
 
     for enriched in deals_enriched:
         deal_id = enriched["deal_id"]
@@ -659,6 +671,16 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, deal_to_company=None,
                 patch_payload["produto"] = produto_default
                 produto_defaults += 1
 
+        # origem_lead default ← Company.origem (auto-herança 23/04 tarde).
+        # Só propaga valores canônicos unificados (ORIGEM_LEAD_PASSTHROUGH).
+        # Valor ambíguo "Linkedin / Whatsapp / Site" fica pro executivo classificar.
+        origem_lead_atual = (props.get("origem_lead") or "").strip()
+        if origem_lead_atual in ("", "(em preenchimento)"):
+            company_origem_raw = (enriched.get("company_origem") or "").strip()
+            if company_origem_raw in ORIGEM_LEAD_PASSTHROUGH:
+                patch_payload["origem_lead"] = company_origem_raw
+                origem_lead_defaults += 1
+
         # e_o_primeiro_match derivado do histórico Ganho da Company (E6 Onda A).
         # Sem closedate no deal atual: assume "mais recente" (trata qualquer Ganho
         # da Company como "anterior") — evita false positives de primeiro match.
@@ -690,7 +712,8 @@ def patch_derived_back(deals_enriched, raw_deals_by_id, deal_to_company=None,
 
     print(
         f"PATCH back: {atualizados} deals atualizados, {erros} erros (lookback {lookback_hours}h) "
-        f"| produto defaults: {produto_defaults} | primeiro_match defaults: {primeiro_match_defaults}"
+        f"| produto defaults: {produto_defaults} | primeiro_match defaults: {primeiro_match_defaults} "
+        f"| origem_lead defaults: {origem_lead_defaults}"
     )
     return atualizados
 
