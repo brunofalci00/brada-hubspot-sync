@@ -211,6 +211,37 @@ def req(method, path, **kwargs):
     return r
 
 
+def load_owner_map():
+    """Retorna {owner_id: "Nome Sobrenome"} via /crm/v3/owners.
+
+    Owner IDs sao usados como values em campos tipo owner-reference
+    (hubspot_owner_id, executivo_match) e em selects legacy com IDs
+    (executivo_responsavel). Sem este map, Looker mostra numero bruto.
+    """
+    owners = {}
+    after = None
+    while True:
+        params = {"limit": 100}
+        if after:
+            params["after"] = after
+        r = req("GET", "/crm/v3/owners", params=params)
+        if r.status_code != 200:
+            print(f"ERRO owners: {r.status_code} {r.text[:200]}")
+            break
+        data = r.json()
+        for o in data.get("results", []):
+            nome = f"{o.get('firstName', '')} {o.get('lastName', '')}".strip()
+            if not nome:
+                nome = o.get("email", "") or o.get("id", "")
+            owners[o["id"]] = nome
+        paging = data.get("paging", {}).get("next")
+        if not paging:
+            break
+        after = paging.get("after")
+    print(f"Owners carregados: {len(owners)}")
+    return owners
+
+
 def load_stages():
     """Retorna {stage_id: {nome, ordem, pipeline_id, pipeline_nome, probability, is_closed}}."""
     stages = {}
@@ -370,7 +401,7 @@ def _normalize_uf(s):
 # ENRIQUECIMENTO
 # ===================================================
 
-def enrich(deal, stages, deal_to_company, companies):
+def enrich(deal, stages, deal_to_company, companies, owners=None):
     p = deal.get("properties", {}) or {}
     deal_id = deal["id"]
     stage_id = p.get("dealstage") or ""
@@ -501,6 +532,9 @@ def enrich(deal, stages, deal_to_company, companies):
         "executivo_match": p.get("executivo_match", ""),
         "trabalhado_por": p.get("trabalhado_por", "") or "(em preenchimento)",
         "hubspot_owner_id": p.get("hubspot_owner_id", ""),
+        # Nome resolvido via /crm/v3/owners - coluna canonica pra Looker filtrar
+        # por executivo. Substitui os 3 campos acima no dashboard.
+        "executivo_nome": (owners or {}).get(p.get("hubspot_owner_id", ""), "") or "(sem owner)",
         # Diagnostico/qualidade
         "motivo_de_perda": p.get("motivo_de_perda", "") or ("(sem motivo)" if e_perdido else ""),
         "origem_lead": p.get("origem_lead", "") or "(em preenchimento)",
@@ -766,6 +800,7 @@ def main():
         raise Exception("HUBSPOT_TOKEN nao configurado.")
 
     stages = load_stages()
+    owners = load_owner_map()
     deals = fetch_all_deals()
     if not deals:
         print("Nenhum deal encontrado. Abortando.")
@@ -775,7 +810,7 @@ def main():
     deal_to_company = fetch_associated_companies(deal_ids)
     companies = fetch_companies(deal_to_company.values())
 
-    enriched = [enrich(d, stages, deal_to_company, companies) for d in deals]
+    enriched = [enrich(d, stages, deal_to_company, companies, owners=owners) for d in deals]
 
     # PATCH back: propaga derivacoes (lei_principal / linha_de_imposto_categoria)
     # + defaults produto/e_o_primeiro_match (E6 Onda A), limitado aos deals
