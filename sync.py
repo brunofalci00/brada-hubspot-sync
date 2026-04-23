@@ -56,7 +56,7 @@ DEAL_PROPERTIES = [
     "createdate",
     "closedate",
     "hs_lastmodifieddate",
-    "hs_date_entered_current_stage",
+    "hs_v2_date_entered_current_stage",  # v2 preenche pra deals criados no stage (v1 só quando move)
     "e_o_primeiro_match",
     "produto",
     "valor_oportunidade",
@@ -472,7 +472,7 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
     mes_criacao = createdate.strftime("%Y-%m") if createdate else ""
     ano_criacao = createdate.strftime("%Y") if createdate else ""
 
-    entered_stage = parse_dt(p.get("hs_date_entered_current_stage"))
+    entered_stage = parse_dt(p.get("hs_v2_date_entered_current_stage"))
     dias_no_stage = (now - entered_stage).days if entered_stage else None
 
     company_id = deal_to_company.get(deal_id)
