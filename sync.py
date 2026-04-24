@@ -335,6 +335,39 @@ def fetch_companies(company_ids):
     return companies
 
 
+def fetch_all_companies():
+    """Puxa TODAS as Companies via Search API paginada (incluindo órfãs
+    sem Deal associado). Usado pra popular aba raw_companies do Sheet.
+
+    Diferença vs `fetch_companies(company_ids)`: esta retorna todas;
+    aquela só as associadas a deals que já foram baixados.
+    """
+    companies = []
+    after = None
+    # createdate existe em toda Company — ordem estável entre páginas.
+    properties = COMPANY_PROPERTIES + ["createdate"]
+    while True:
+        body = {
+            "limit": 100,
+            "properties": properties,
+            "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}],
+        }
+        if after:
+            body["after"] = after
+        r = req("POST", "/crm/v3/objects/companies/search", json=body)
+        if r.status_code != 200:
+            print(f"ERRO search companies: {r.status_code} {r.text[:300]}")
+            break
+        data = r.json()
+        companies.extend(data.get("results", []))
+        paging = data.get("paging", {}).get("next")
+        if not paging:
+            break
+        after = paging.get("after")
+    print(f"Companies totais carregadas: {len(companies)}")
+    return companies
+
+
 # ===================================================
 # HELPERS
 # ===================================================
@@ -568,6 +601,35 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
     }
 
 
+def enrich_company(company, num_deals_by_cid):
+    """Monta dict canônico para aba raw_companies do Sheet.
+
+    Inclui:
+    - company_id, company_name
+    - cnpj (cru) + cnpj_efetivo (so digitos — chave de agregação)
+    - domain, industry, origem, razao_social, createdate
+    - state (normalizado pra sigla UF), municipio
+    - num_deals_vinculados — contagem de Deals com essa Company
+    """
+    p = company.get("properties", {}) or {}
+    cid = company["id"]
+    cnpj_raw = p.get("cnpj", "") or ""
+    return {
+        "company_id": cid,
+        "company_name": p.get("name", "") or "",
+        "cnpj": cnpj_raw,
+        "cnpj_efetivo": _normalize_cnpj(cnpj_raw),
+        "domain": p.get("domain", "") or "",
+        "industry": p.get("industry", "") or "",
+        "state": _normalize_uf(p.get("state", "")) or "(em preenchimento)",
+        "municipio": p.get("municipio", "") or "",
+        "razao_social": p.get("razao_social", "") or "",
+        "origem": p.get("origem", "") or "",
+        "createdate": p.get("createdate", "") or "",
+        "num_deals_vinculados": num_deals_by_cid.get(str(cid), 0),
+    }
+
+
 # ===================================================
 # PATCH BACK (lei_principal / linha_de_imposto_categoria)
 # ===================================================
@@ -784,8 +846,14 @@ def get_sheets_client():
     return gspread.authorize(creds)
 
 
-def write_to_sheets(rows, header):
-    """Sobrescreve a aba raw_deals com os dados frescos (padrao corridas)."""
+def write_to_sheets(rows, header, worksheet_name=WORKSHEET_NAME,
+                    meta_label="ultima_sync_deals", meta_range="A1:C1"):
+    """Sobrescreve a aba indicada com dados frescos (padrao corridas).
+
+    worksheet_name: aba destino (default `raw_deals`).
+    meta_label / meta_range: chave + intervalo na aba `_meta` pra timestamp
+    (default `ultima_sync_deals` em A1:C1). Use A2:C2 pra companies.
+    """
     gc = get_sheets_client()
 
     if not SPREADSHEET_ID:
@@ -794,9 +862,9 @@ def write_to_sheets(rows, header):
     sh = gc.open_by_key(SPREADSHEET_ID)
 
     try:
-        ws = sh.worksheet(WORKSHEET_NAME)
+        ws = sh.worksheet(worksheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=max(1000, len(rows) + 100), cols=len(header))
+        ws = sh.add_worksheet(title=worksheet_name, rows=max(1000, len(rows) + 100), cols=len(header))
 
     ws.clear()
     ws.update(values=[header] + rows, range_name="A1")
@@ -805,11 +873,11 @@ def write_to_sheets(rows, header):
     try:
         meta = sh.worksheet("_meta")
         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-        meta.update(values=[["ultima_sync_deals", now, len(rows)]], range_name="A1:C1")
+        meta.update(values=[[meta_label, now, len(rows)]], range_name=meta_range)
     except gspread.exceptions.WorksheetNotFound:
         pass
 
-    print(f"Sheets atualizado: {len(rows)} linhas em {WORKSHEET_NAME}")
+    print(f"Sheets atualizado: {len(rows)} linhas em {worksheet_name}")
 
 
 # ===================================================
@@ -856,6 +924,24 @@ def main():
     rows = [[r[k] for k in header] for r in enriched]
 
     write_to_sheets(rows, header)
+
+    # Aba raw_companies: TODAS as Companies (incluindo orfas sem Deal)
+    # Desbloqueia scorecards Ato 3 Cadastro do dashboard Qualidade (23/04 tarde).
+    all_companies = fetch_all_companies()
+    if all_companies:
+        num_deals_by_cid = defaultdict(int)
+        for cid in deal_to_company.values():
+            if cid:
+                num_deals_by_cid[str(cid)] += 1
+        enriched_companies = [enrich_company(c, num_deals_by_cid) for c in all_companies]
+        comp_header = list(enriched_companies[0].keys())
+        comp_rows = [[r[k] for k in comp_header] for r in enriched_companies]
+        write_to_sheets(
+            comp_rows, comp_header,
+            worksheet_name="raw_companies",
+            meta_label="ultima_sync_companies",
+            meta_range="A2:C2",
+        )
 
     # Resumo
     ativos = sum(1 for r in enriched if r["e_ativo"])
