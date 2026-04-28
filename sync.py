@@ -612,6 +612,10 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "company_state": _normalize_uf(comp.get("state", "")) or "(em preenchimento)",
         "company_municipio": comp.get("city", ""),  # Fase 4 27/04: campo nativo HubSpot e `city` (nao `municipio`); preserva chave da Sheet pra compat Looker
         "company_razao_social": comp.get("razao_social", ""),
+        # Fase 6 (28/04): espelho do diagnostico Company-level em cada deal pra
+        # gap_diag/pct_ativos_com_diag/valor_prioridade do Quality testarem
+        # Company-level sem precisar blend. Source of truth pos-migracao.
+        "company_valor_total_do_diagnostico": num(comp.get("valor_total_do_diagnostico")),
         # Link
         "link_hubspot": f"https://app.hubspot.com/contacts/{PORTAL_ID}/deal/{deal_id}",
     }
