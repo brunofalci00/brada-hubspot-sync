@@ -1,0 +1,13 @@
+company_id,company_name,motivo,opcoes_cnpj,acao
+54004117564,Hani - Parceria - Evento Dianstia,Nome parece evento e nao empresa formal,Verificar se vale criar Company - se nao - mover deal pra Perdido,REVISAR_OU_DELETAR
+47342321725,GRUPO UNITA,Multiplas UNITA distintas no Brasil,"UNITA Participacoes LTDA construcao 09.302.624/0001-38 (SP) | UNITA Participacoes S/A 41.894.331/0001-08 (Timbo SC) | CF & CO LTDA Grupo Unita 40.284.011/0001-65",ESCOLHER_CNPJ_CORRETO
+47341229834,ELETROMAR,Multiplas Eletromar em segmentos diferentes,"Eletromar Eletrica Industrial e Naval 33.607.298/0001-51 (Penha SC) | Eletromar Comercial Material Eletrico 16.922.851/0001-21 (Itaberaba BA) | Eletromar Motores 50.560.694/0001-90 (Cianorte PR)",ESCOLHER_CNPJ_CORRETO
+47354032026,SELA BRASIL,WebSearch nao retornou CNPJ explicito,Distribuidora de selantes em Sao Paulo CEP 03430-000 - buscar via Junta Comercial SP ou cnpj.biz,BUSCAR_CNPJ_MANUAL
+49508032936,ME POUPE,WebSearch nao retornou CNPJ explicito,Empresa Nathalia Arcuri educacao financeira em SP - buscar via cnpj.biz ou Junta Comercial SP,BUSCAR_CNPJ_MANUAL
+49503533447,Grupo Fala,Multiplas Fala (varias agencias),"Fala Brasil 07.755.037/0001-79 (BH) | Fala Comunicacao 12.363.600/0001-01 (RJ) | Fala Agencia Marketing 59.890.271/0001-02 (SP)",ESCOLHER_CNPJ_CORRETO
+47354337378,Cobrecom,CNPJ encontrado mas BAIXADA (56678501000186),Cobrecom segue ativa hoje em Itu/SP e Tres Lagoas/MS - buscar CNPJ atual ativo,BUSCAR_CNPJ_ATUAL
+49501837497,Grupo Cataratas,Multiplas Cataratas em segmentos diferentes,"URBIA CATARATAS S.A. 46.984.425/0001-83 (operacao Iguacu) | Cataratas do Iguacu S/A 03.119.648/0001-70 (Aquafoz Foz)",ESCOLHER_CNPJ_CORRETO
+48334071087,Grupo DuraMais,Tres DuraMais distintas em segmentos diferentes,"Duramais Metalizacao 51.694.598/0001-05 (Araraquara SP) | Duramais Tintas 28.121.615/0001-95 (Rio Claro SP) | Grupo DuraMais Embalagens (Conpel/Vinco/Stamp) - buscar matriz",ESCOLHER_CNPJ_CORRETO
+47334724100,CTM Fios,Sem CNPJ explicito - empresa textil em Blumenau SC,Buscar via Junta Comercial SC ou cnpj.biz - foco em poliamida e roupas,BUSCAR_CNPJ_MANUAL
+47396977750,Dryko,Industria Dryko BAIXADA (03081895000124),Dryko segue ativa em Guarulhos/Itaquaquecetuba SP - buscar CNPJ atual,BUSCAR_CNPJ_ATUAL
+47336673197,Delta Fire,Multiplas Delta Fire pequenas,"Delta Equipamentos Contra Incendio 01.409.998/0001-45 (SBC SP) | Outras unidades menores - confirmar matriz da deltafire.com.br",BUSCAR_MATRIZ_OFICIAL

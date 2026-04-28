@@ -187,8 +187,10 @@ COMPANY_PROPERTIES = [
     "origem",
     "domain",
     "industry",
-    "state",  # UF - E2 popula via BrasilAPI
-    "municipio",
+    "state",  # UF - auto-preenchido via BrasilAPI (Fase 4 27/04)
+    "city",  # Municipio - auto-preenchido via BrasilAPI (Fase 4 27/04). NB: campo
+             # `municipio` nao existe em Company (validado 27/04); usar `city`.
+    "zip",  # CEP - auto-preenchido via BrasilAPI (Fase 4 27/04)
     "razao_social",
 ]
 
@@ -594,7 +596,7 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "company_origem": comp.get("origem", ""),
         "company_industry": comp.get("industry", ""),
         "company_state": _normalize_uf(comp.get("state", "")) or "(em preenchimento)",
-        "company_municipio": comp.get("municipio", ""),
+        "company_municipio": comp.get("city", ""),  # Fase 4 27/04: campo nativo HubSpot e `city` (nao `municipio`); preserva chave da Sheet pra compat Looker
         "company_razao_social": comp.get("razao_social", ""),
         # Link
         "link_hubspot": f"https://app.hubspot.com/contacts/{PORTAL_ID}/deal/{deal_id}",
@@ -622,7 +624,7 @@ def enrich_company(company, num_deals_by_cid):
         "domain": p.get("domain", "") or "",
         "industry": p.get("industry", "") or "",
         "state": _normalize_uf(p.get("state", "")) or "(em preenchimento)",
-        "municipio": p.get("municipio", "") or "",
+        "municipio": p.get("city", "") or "",  # Fase 4 27/04: ler `city`, manter chave `municipio` na Sheet
         "razao_social": p.get("razao_social", "") or "",
         "origem": p.get("origem", "") or "",
         "createdate": p.get("createdate", "") or "",
@@ -821,6 +823,105 @@ def patch_default_trabalhado_por(raw_deals):
     return atualizados
 
 
+def patch_company_localizacao_via_cnpj(companies_list):
+    """Auto-preenche state/city/zip da Company via BrasilAPI quando CNPJ existe e
+    o campo correspondente esta vazio.
+
+    Regra Bruno 27/04 (reuniao FGM): se executivo ja preencheu, NUNCA sobrescreve.
+    So preenche o que esta em branco. Bate BrasilAPI 1x por CNPJ por execucao
+    (cache local). Rate limit conservador 0.5s entre calls.
+
+    Args:
+        companies_list: lista de dicts {id, properties:{cnpj, state, city, zip, ...}}
+            no formato retornado por fetch_all_companies().
+
+    Returns:
+        count de Companies atualizadas.
+    """
+    candidatas = []
+    for c in companies_list:
+        p = c.get("properties", {}) or {}
+        cnpj = _normalize_cnpj(p.get("cnpj"))
+        if not cnpj or len(cnpj) != 14:
+            continue
+        # So enriquece se ALGUM dos 3 estiver vazio (caso contrario nao precisa)
+        if (p.get("state") or "").strip() and (p.get("city") or "").strip() and (p.get("zip") or "").strip():
+            continue
+        candidatas.append((c["id"], cnpj, p))
+
+    if not candidatas:
+        print("patch_company_localizacao_via_cnpj: 0 Companies pra enriquecer")
+        return 0
+
+    print(f"patch_company_localizacao_via_cnpj: {len(candidatas)} Companies candidatas (cnpj preenchido + algum campo de localizacao vazio)")
+
+    cache = {}  # cnpj -> dict BrasilAPI
+    atualizados = 0
+    erros = 0
+    sem_dados = 0
+
+    for cid, cnpj, props_atuais in candidatas:
+        if cnpj not in cache:
+            # BrasilAPI tem rate limit agressivo — retry exponencial em 429.
+            # 2s entre calls "frios" + backoff em 429 cobre rate sem ser lento demais.
+            dados = None
+            tipo_erro = None  # "sem_dados" | "exception"
+            for attempt in range(4):
+                try:
+                    r = requests.get(
+                        f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}",
+                        timeout=15,
+                    )
+                    if r.status_code == 200:
+                        dados = r.json()
+                        break
+                    if r.status_code == 429:
+                        wait = 2 ** (attempt + 2)  # 4, 8, 16, 32s
+                        print(f"  [429 brasilapi] cnpj={cnpj} retry em {wait}s ({attempt+1}/4)")
+                        time.sleep(wait)
+                        continue
+                    # 404 ou outro erro nao-retryable -> CNPJ provavelmente invalido
+                    tipo_erro = "sem_dados"
+                    break
+                except Exception as e:
+                    print(f"  [brasilapi exception] cnpj={cnpj}: {e}")
+                    tipo_erro = "exception"
+                    break
+            cache[cnpj] = dados
+            if dados is None:
+                if tipo_erro == "exception":
+                    erros += 1
+                else:
+                    sem_dados += 1
+            time.sleep(2)  # respeita BrasilAPI entre CNPJs distintos
+
+        dados = cache.get(cnpj)
+        if not dados:
+            continue
+
+        # So preenche campos vazios (regra "nunca sobrescrever manual")
+        patch_props = {}
+        if not (props_atuais.get("state") or "").strip() and dados.get("uf"):
+            patch_props["state"] = dados["uf"]
+        if not (props_atuais.get("city") or "").strip() and dados.get("municipio"):
+            patch_props["city"] = dados["municipio"]
+        if not (props_atuais.get("zip") or "").strip() and dados.get("cep"):
+            patch_props["zip"] = dados["cep"]
+
+        if not patch_props:
+            continue
+
+        r = req("PATCH", f"/crm/v3/objects/companies/{cid}", json={"properties": patch_props})
+        if r.status_code in (200, 201):
+            atualizados += 1
+        else:
+            erros += 1
+            print(f"  [PATCH erro] company={cid} status={r.status_code}: {r.text[:150]}")
+
+    print(f"patch_company_localizacao_via_cnpj: {atualizados} atualizados, {sem_dados} sem dados na BrasilAPI, {erros} erros")
+    return atualizados
+
+
 # ===================================================
 # GOOGLE SHEETS
 # ===================================================
@@ -928,6 +1029,15 @@ def main():
     # Aba raw_companies: TODAS as Companies (incluindo orfas sem Deal)
     # Desbloqueia scorecards Ato 3 Cadastro do dashboard Qualidade (23/04 tarde).
     all_companies = fetch_all_companies()
+
+    # Fase 4 (27/04): auto-preenche state/city/zip via BrasilAPI pra Companies
+    # com CNPJ + algum campo de localizacao vazio. Respeita preenchimento manual.
+    # Roda ANTES de enrich_company pra a aba raw_companies sair ja com dados frescos.
+    if all_companies:
+        patch_company_localizacao_via_cnpj(all_companies)
+        # Re-fetch pra pegar valores recem-patchados (Companies eh objeto leve, tolerable)
+        all_companies = fetch_all_companies()
+
     if all_companies:
         num_deals_by_cid = defaultdict(int)
         for cid in deal_to_company.values():
@@ -942,6 +1052,28 @@ def main():
             meta_label="ultima_sync_companies",
             meta_range="A2:C2",
         )
+
+    # Fase 5 (27/04): popula Sheet de Gaps por Executivo. Reusa fetch ja
+    # feito acima — zero requests extras ao HubSpot.
+    try:
+        from popular_gaps_sheet import popular_gaps_sheet
+        ganho_stages = {sid for sid, info in stages.items()
+                        if info.get("is_closed") and info.get("probability") == "1.0"}
+        perdido_stages = {sid for sid, info in stages.items()
+                          if info.get("is_closed") and info.get("probability") == "0.0"}
+        gc = get_sheets_client()
+        popular_gaps_sheet(
+            deals=deals,
+            companies=all_companies or [],
+            deal_to_company=deal_to_company,
+            owners=owners or {},
+            ganho_stages=ganho_stages,
+            perdido_stages=perdido_stages,
+            gc=gc,
+        )
+    except Exception as e:
+        # Nao falha o sync por causa de gaps — log e segue
+        print(f"[warn] Fase 5 (gaps sheet) falhou: {e}")
 
     # Resumo
     ativos = sum(1 for r in enriched if r["e_ativo"])
