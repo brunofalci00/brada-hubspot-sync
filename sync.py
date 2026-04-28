@@ -192,6 +192,20 @@ COMPANY_PROPERTIES = [
              # `municipio` nao existe em Company (validado 27/04); usar `city`.
     "zip",  # CEP - auto-preenchido via BrasilAPI (Fase 4 27/04)
     "razao_social",
+    # Diagnostico migrado Deal->Company (Fase 3 27/04). Source of truth pos-migracao
+    # pro dashboard agregar via Company sem duplicar (1 row por empresa).
+    "valor_total_do_diagnostico",
+    "valor_lei_rouanet",
+    "valor_lei_do_esporte",
+    "valor_lei_do_esporte_estadual",
+    "valor_lei_do_bem",
+    "valor_lei_da_cultura",
+    "valor_lei_da_cultura_municipal",
+    "valor_lei_da_crianca_e_do_adolescente",
+    "valor_lei_do_idoso",
+    "valor_lei_da_reciclagem",
+    "valor_pronas",
+    "valor_pronon",
 ]
 
 WORKSHEET_NAME = "raw_deals"
@@ -603,7 +617,7 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
     }
 
 
-def enrich_company(company, num_deals_by_cid):
+def enrich_company(company, num_deals_by_cid, flags_by_cid=None):
     """Monta dict canônico para aba raw_companies do Sheet.
 
     Inclui:
@@ -612,10 +626,20 @@ def enrich_company(company, num_deals_by_cid):
     - domain, industry, origem, razao_social, createdate
     - state (normalizado pra sigla UF), municipio
     - num_deals_vinculados — contagem de Deals com essa Company
+    - Fase 6 (28/04): diagnostico Company-level (source of truth pos-migracao)
+      + flags tem_deal_ativo/ganho/perdido pra widgets que filtram por estado do pipeline
     """
     p = company.get("properties", {}) or {}
     cid = company["id"]
     cnpj_raw = p.get("cnpj", "") or ""
+    flags = (flags_by_cid or {}).get(str(cid), {})
+
+    def num(x):
+        try:
+            return float(x) if x not in (None, "") else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
     return {
         "company_id": cid,
         "company_name": p.get("name", "") or "",
@@ -629,6 +653,24 @@ def enrich_company(company, num_deals_by_cid):
         "origem": p.get("origem", "") or "",
         "createdate": p.get("createdate", "") or "",
         "num_deals_vinculados": num_deals_by_cid.get(str(cid), 0),
+        # Diagnostico Company-level (Fase 3 migrou de Deal -> Company; Fase 6 expoe na Sheet)
+        "valor_total_do_diagnostico": num(p.get("valor_total_do_diagnostico")),
+        "valor_lei_rouanet": num(p.get("valor_lei_rouanet")),
+        "valor_lei_do_esporte": num(p.get("valor_lei_do_esporte")),
+        "valor_lei_do_esporte_estadual": num(p.get("valor_lei_do_esporte_estadual")),
+        "valor_lei_do_bem": num(p.get("valor_lei_do_bem")),
+        "valor_lei_da_cultura": num(p.get("valor_lei_da_cultura")),
+        "valor_lei_da_cultura_municipal": num(p.get("valor_lei_da_cultura_municipal")),
+        "valor_lei_da_crianca_e_do_adolescente": num(p.get("valor_lei_da_crianca_e_do_adolescente")),
+        "valor_lei_do_idoso": num(p.get("valor_lei_do_idoso")),
+        "valor_lei_da_reciclagem": num(p.get("valor_lei_da_reciclagem")),
+        "valor_pronas": num(p.get("valor_pronas")),
+        "valor_pronon": num(p.get("valor_pronon")),
+        # Flags de estado do pipeline (1 se Company tem >=1 deal naquele estado).
+        # Usadas no Hero "PROJETADO" pra filtrar Companies com pipeline ativo.
+        "tem_deal_ativo": 1 if flags.get("ativo", 0) > 0 else 0,
+        "tem_deal_ganho": 1 if flags.get("ganho", 0) > 0 else 0,
+        "tem_deal_perdido": 1 if flags.get("perdido", 0) > 0 else 0,
     }
 
 
@@ -1043,7 +1085,24 @@ def main():
         for cid in deal_to_company.values():
             if cid:
                 num_deals_by_cid[str(cid)] += 1
-        enriched_companies = [enrich_company(c, num_deals_by_cid) for c in all_companies]
+
+        # Flags de estado do pipeline por Company (Fase 6 28/04).
+        # Conta deals ativos/ganhos/perdidos vinculados a cada Company pra alimentar
+        # `tem_deal_ativo` no Hero PROJETADO. Usa `enriched` (que ja tem e_ativo/e_ganho/e_perdido).
+        flags_by_cid = defaultdict(lambda: {"ativo": 0, "ganho": 0, "perdido": 0})
+        for d in enriched:
+            cid = d.get("company_id")
+            if not cid:
+                continue
+            cid_str = str(cid)
+            if d.get("e_ativo"):
+                flags_by_cid[cid_str]["ativo"] += 1
+            if d.get("e_ganho"):
+                flags_by_cid[cid_str]["ganho"] += 1
+            if d.get("e_perdido"):
+                flags_by_cid[cid_str]["perdido"] += 1
+
+        enriched_companies = [enrich_company(c, num_deals_by_cid, flags_by_cid) for c in all_companies]
         comp_header = list(enriched_companies[0].keys())
         comp_rows = [[r[k] for k in comp_header] for r in enriched_companies]
         write_to_sheets(
