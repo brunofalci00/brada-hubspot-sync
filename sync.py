@@ -1027,6 +1027,98 @@ def write_to_sheets(rows, header, worksheet_name=WORKSHEET_NAME,
     print(f"Sheets atualizado: {len(rows)} linhas em {worksheet_name}")
 
 
+def write_performance_sheet(enriched, gc):
+    """Agrega deals por mes_criacao x produto e faz join com metas_mensais.
+
+    Escreve aba raw_performance com dados pre-computados — sem necessidade
+    de blend no Looker Studio.
+
+    Colunas de saida:
+      mes_criacao, data_mes, produto, vendido_brl, valor_projetado_ativo,
+      n_ganhos, n_deals, meta_brl, pct_meta
+
+    data_mes: primeiro dia do mes (YYYY-MM-DD) — usado como Date range dimension
+    no Looker Studio para que o Date Range Control filtre esta tabela.
+    """
+    sh = gc.open_by_key(SPREADSHEET_ID)
+
+    # Ler metas_mensais (preenchida manualmente)
+    metas_idx = {}
+    try:
+        ws_metas = sh.worksheet("metas_mensais")
+        for m in ws_metas.get_all_records():
+            mes = str(m.get("mes_criacao", "") or m.get("mes_ano", "")).strip()
+            prod = str(m.get("produto", "") or m.get("Produto", "")).strip()
+            if mes and prod:
+                raw_meta = str(m.get("meta_brl", 0) or 0)
+                # Limpa formato moeda: "R$ 2.000.000" ou "2.000.000,50" -> float
+                raw_meta = raw_meta.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
+                metas_idx[(mes, prod)] = {
+                    "meta_brl": float(raw_meta) if raw_meta else 0.0,
+                }
+    except gspread.exceptions.WorksheetNotFound:
+        print("[warn] Aba metas_mensais nao encontrada — raw_performance sem metas")
+
+    # Agregar deals por mes_criacao x produto
+    perf = defaultdict(lambda: {
+        "vendido_brl": 0.0,
+        "valor_projetado_ativo": 0.0,
+        "n_ganhos": 0,
+        "n_deals": 0,
+    })
+    for d in enriched:
+        mes = str(d.get("mes_criacao", "")).strip()
+        prod = str(d.get("produto", "")).strip()
+        if not mes:
+            continue
+        key = (mes, prod)
+        perf[key]["vendido_brl"] += float(d.get("valor_vendido", 0) or 0)
+        perf[key]["valor_projetado_ativo"] += float(d.get("valor_projetado_ativo", 0) or 0)
+        perf[key]["n_ganhos"] += int(d.get("e_ganho", 0) or 0)
+        perf[key]["n_deals"] += 1
+
+    # FULL OUTER JOIN: uniao de chaves de metas e de deals
+    all_keys = sorted(set(metas_idx.keys()) | set(perf.keys()))
+
+    rows_out = []
+    for (mes, prod) in all_keys:
+        m = metas_idx.get((mes, prod), {})
+        p = perf.get((mes, prod), {})
+        meta_brl = m.get("meta_brl", 0) or 0
+        vendido = p.get("vendido_brl", 0) or 0
+        pct_meta = round(vendido / meta_brl, 4) if meta_brl else ""
+        # Converter "YYYY-MM" -> "YYYY-MM-01" para uso como Date range dimension no Looker
+        try:
+            year, month = mes.split("-")
+            data_mes = f"{int(year):04d}-{int(month):02d}-01"
+        except Exception:
+            data_mes = ""
+        rows_out.append({
+            "mes_criacao": mes,
+            "data_mes": data_mes,
+            "produto": prod,
+            "vendido_brl": round(vendido, 2),
+            "valor_projetado_ativo": round(p.get("valor_projetado_ativo", 0) or 0, 2),
+            "n_ganhos": p.get("n_ganhos", 0) or 0,
+            "n_deals": p.get("n_deals", 0) or 0,
+            "meta_brl": round(meta_brl, 2),
+            "pct_meta": pct_meta,
+        })
+
+    if not rows_out:
+        print("[warn] raw_performance: nenhuma linha gerada")
+        return
+
+    header = list(rows_out[0].keys())
+    data = [[r[k] for k in header] for r in rows_out]
+    write_to_sheets(
+        data, header,
+        worksheet_name="raw_performance",
+        meta_label="ultima_sync_performance",
+        meta_range="A3:C3",
+    )
+
+
 # ===================================================
 # MAIN
 # ===================================================
@@ -1137,6 +1229,15 @@ def main():
     except Exception as e:
         # Nao falha o sync por causa de gaps — log e segue
         print(f"[warn] Fase 5 (gaps sheet) falhou: {e}")
+
+    # raw_performance: join deals × metas_mensais pre-computado no cron.
+    # Elimina necessidade de blend no Looker Studio (blends com scorecards nao
+    # respondem ao Date Range Control — limitacao documentada da ferramenta).
+    try:
+        gc_perf = get_sheets_client()
+        write_performance_sheet(enriched, gc_perf)
+    except Exception as e:
+        print(f"[warn] Performance sheet falhou: {e}")
 
     # Resumo
     ativos = sum(1 for r in enriched if r["e_ativo"])
