@@ -4,3 +4,14 @@ __pycache__/
 *.pyc
 logs/
 SETUP_BRUNO.md
+
+# Fase 7 — artifacts runtime (regenerados pelos scripts)
+gaps_companies_sem_cnpj_*.csv
+gaps_deals_sem_company_*.csv
+scrape_cnpj_log_*.csv
+sprint1c_matches.csv
+sprint2_alta.csv
+sprint2_media.csv
+sprint2_baixa.csv
+sprint2_*.json
+brasilapi_cache.json
