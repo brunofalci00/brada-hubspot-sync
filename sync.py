@@ -11,7 +11,7 @@ import datetime
 import json
 import os
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import gspread
 import requests
@@ -538,6 +538,25 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
     produto = produto_hubspot_label or ("Match" if pipeline_nome == "Incentivador" else "Elaboração")
     produto_foi_inferido = 0 if produto_hubspot_value else 1
 
+    # Fase 9 (30/04): signatures pra deteccao de duplicatas.
+    # Counters/severidade/keep_suggestion sao preenchidos no main() em 2a passada
+    # (dependem de visao global de todos os deals).
+    ano_close = closedate.strftime("%Y") if closedate else ""
+    data_close = closedate.strftime("%Y-%m-%d") if closedate else ""
+    lei_eff = lei_principal if lei_principal != "(sem lei preenchida)" else ""
+
+    dup_sig_h1 = (f"{company_id}|{lei_eff}|{ano_close}"
+                  if (e_ganho and company_id and lei_eff and ano_close) else "")
+    dup_sig_h2 = (f"{company_id}|{int(valor_aporte)}|{data_close}"
+                  if (valor_aporte > 0 and data_close and company_id) else "")
+    dup_sig_h3 = (f"{company_id}|{lei_eff}"
+                  if (e_ativo and company_id and lei_eff) else "")
+
+    dn_low = (p.get("dealname") or "").lower()
+    dealname_clone_flag = 1 if any(
+        t in dn_low for t in ["(clone)", "(copia)", "(copy)", "_copy", "(cópia)"]
+    ) else 0
+
     return {
         "deal_id": deal_id,
         "deal_name": p.get("dealname", ""),
@@ -616,6 +635,18 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         # gap_diag/pct_ativos_com_diag/valor_prioridade do Quality testarem
         # Company-level sem precisar blend. Source of truth pos-migracao.
         "company_valor_total_do_diagnostico": num(comp.get("valor_total_do_diagnostico")),
+        # Fase 9 (30/04): deteccao de duplicatas. Signatures + clone_flag aqui;
+        # counts/severidade/keep_suggestion preenchidos em 2a passada no main().
+        "dup_signature_h1": dup_sig_h1,
+        "dup_signature_h2": dup_sig_h2,
+        "dup_signature_h3": dup_sig_h3,
+        "dealname_clone_flag": dealname_clone_flag,
+        "dup_count_h1": 0,
+        "dup_count_h2": 0,
+        "dup_count_h3": 0,
+        "e_potencial_dup": 0,
+        "dup_severity": "",
+        "dup_keep_suggestion": "",
         # Link
         "link_hubspot": f"https://app.hubspot.com/contacts/{PORTAL_ID}/deal/{deal_id}",
     }
@@ -1141,6 +1172,69 @@ def main():
     companies = fetch_companies(deal_to_company.values())
 
     enriched = [enrich(d, stages, deal_to_company, companies, owners=owners) for d in deals]
+
+    # Fase 9 (30/04): segunda passada — preenche dup_count/severidade/keep_suggestion
+    # baseado em visao global de todos deals enriched. Counter eh O(N), trivial.
+    sig_h1_counts = Counter(d["dup_signature_h1"] for d in enriched if d["dup_signature_h1"])
+    sig_h2_counts = Counter(d["dup_signature_h2"] for d in enriched if d["dup_signature_h2"])
+    sig_h3_counts = Counter(d["dup_signature_h3"] for d in enriched if d["dup_signature_h3"])
+
+    for d in enriched:
+        d["dup_count_h1"] = sig_h1_counts.get(d["dup_signature_h1"], 0) if d["dup_signature_h1"] else 0
+        d["dup_count_h2"] = sig_h2_counts.get(d["dup_signature_h2"], 0) if d["dup_signature_h2"] else 0
+        d["dup_count_h3"] = sig_h3_counts.get(d["dup_signature_h3"], 0) if d["dup_signature_h3"] else 0
+        is_h1_dup = d["dup_count_h1"] >= 2
+        is_h2_dup = d["dup_count_h2"] >= 2
+        is_h3_dup = d["dup_count_h3"] >= 2
+        is_h4 = d["dealname_clone_flag"] == 1
+        d["e_potencial_dup"] = 1 if (is_h1_dup or is_h2_dup or is_h3_dup or is_h4) else 0
+        if is_h1_dup or is_h2_dup or is_h4:
+            d["dup_severity"] = "ALTA"
+        elif is_h3_dup:
+            d["dup_severity"] = "MEDIA"
+        else:
+            d["dup_severity"] = ""
+
+    def _resolve_keep(enriched_list, sig_field):
+        """Pra cada grupo de deals com mesma signature, escolhe 1 winner como
+        'manter' e marca outros como 'deletar'. Logica: se algum tem clone flag,
+        os SEM clone prevalecem; senao deal mais antigo (createdate ASC) ganha."""
+        groups = defaultdict(list)
+        for x in enriched_list:
+            sig = x.get(sig_field)
+            if sig:
+                groups[sig].append(x)
+        keep = {}
+        for sig, deals_grp in groups.items():
+            if len(deals_grp) < 2:
+                continue
+            non_clone = [x for x in deals_grp if not x["dealname_clone_flag"]]
+            candidates = non_clone if non_clone else deals_grp
+            candidates.sort(key=lambda x: x.get("createdate") or "9999")
+            winner_id = candidates[0]["deal_id"]
+            for x in deals_grp:
+                keep[x["deal_id"]] = "manter" if x["deal_id"] == winner_id else "deletar"
+        return keep
+
+    # Cascata: H1 (Ganhos mesma lei mesmo ano) > H2 (mesmo aporte+closedate) > H3 (ativos mesma lei)
+    keep_h1 = _resolve_keep(enriched, "dup_signature_h1")
+    keep_h2 = _resolve_keep(enriched, "dup_signature_h2")
+    keep_h3 = _resolve_keep(enriched, "dup_signature_h3")
+    for d in enriched:
+        did = d["deal_id"]
+        if did in keep_h1:
+            d["dup_keep_suggestion"] = keep_h1[did]
+        elif did in keep_h2:
+            d["dup_keep_suggestion"] = keep_h2[did]
+        elif did in keep_h3:
+            d["dup_keep_suggestion"] = keep_h3[did]
+        elif d["dealname_clone_flag"] == 1:
+            d["dup_keep_suggestion"] = "deletar"  # clone standalone
+
+    n_dups = sum(d["e_potencial_dup"] for d in enriched)
+    n_alta = sum(1 for d in enriched if d["dup_severity"] == "ALTA")
+    n_clones = sum(d["dealname_clone_flag"] for d in enriched)
+    print(f"Fase 9 dup detection: {n_dups} potenciais ({n_alta} ALTA, {n_clones} clone_flag)")
 
     # PATCH back: propaga derivacoes (lei_principal / linha_de_imposto_categoria)
     # + defaults produto/e_o_primeiro_match (E6 Onda A), limitado aos deals
