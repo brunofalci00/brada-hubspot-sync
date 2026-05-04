@@ -64,6 +64,11 @@ STAGES_FECHADOS = {
     STAGE_PERDIDO_PROPONENTE,
 }
 STAGES_GANHO = {STAGE_GANHO_INCENTIVADOR, STAGE_GANHO_PROPONENTE}
+STAGES_GANHO_INCENTIVADOR = {STAGE_GANHO_INCENTIVADOR}
+
+# Diagnóstico só vale pra pipeline Incentivador (Ivan 04/05).
+# Renovação só infere entre Ganho Incentivador → Deal novo Incentivador.
+PIPELINE_INCENTIVADOR = "default"
 
 # 14 campos copiados do Ganho -> deal novo
 CAMPOS_RENOVACAO = [
@@ -149,8 +154,11 @@ def fetch_deals_candidatos(lookback_days, deal_id=None):
             break
         data = r.json()
         for d in data.get("results", []):
-            stage = d.get("properties", {}).get("dealstage", "")
-            if stage not in STAGES_FECHADOS:
+            props = d.get("properties", {}) or {}
+            stage = props.get("dealstage", "")
+            pipeline = props.get("pipeline", "")
+            # So inferir em deals do pipeline Incentivador (Proponente nao tem diagnostico).
+            if stage not in STAGES_FECHADOS and pipeline == PIPELINE_INCENTIVADOR:
                 deals.append(d)
         paging = data.get("paging", {}).get("next")
         if not paging:
@@ -228,7 +236,10 @@ def fetch_last_ganho_for_company(company_id):
             continue
         all_deals.extend(br.json().get("results", []))
 
-    ganhos = [d for d in all_deals if d.get("properties", {}).get("dealstage") in STAGES_GANHO]
+    # Só Ganhos do Incentivador — diagnóstico nao se aplica a Proponente (Ivan 04/05).
+    ganhos = [d for d in all_deals
+              if d.get("properties", {}).get("dealstage") in STAGES_GANHO_INCENTIVADOR
+              and d.get("properties", {}).get("pipeline", "") == PIPELINE_INCENTIVADOR]
     if not ganhos:
         return None
 

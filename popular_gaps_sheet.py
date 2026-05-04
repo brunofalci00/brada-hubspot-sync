@@ -73,7 +73,8 @@ def _load_overrides_ivan():
         return {}
 
 
-def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdido_stages):
+def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdido_stages,
+                 ganho_stages_incentivador=None):
     """Retorna lista de dicts: owner_nome, tipo, entidade, id, nome, link, descricao, prioridade.
 
     Filtro: gaps de Company so se Company tem >=1 deal associado (decisao Bruno 27/04).
@@ -90,11 +91,18 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
             company_to_deals[str(cid)].append(d)
 
     company_tem_ganho = set()
+    company_tem_ganho_incentivador = set()
+    _g_inc = ganho_stages_incentivador or set()
     for d in deals:
-        if d["properties"].get("dealstage", "") in ganho_stages:
+        stage = d["properties"].get("dealstage", "")
+        if stage in ganho_stages:
             cid = deal_to_company.get(d["id"])
             if cid:
                 company_tem_ganho.add(str(cid))
+        if stage in _g_inc:
+            cid = deal_to_company.get(d["id"])
+            if cid:
+                company_tem_ganho_incentivador.add(str(cid))
 
     deal_link = lambda did: f"https://app.hubspot.com/contacts/{PORTAL_ID}/deal/{did}"
     company_link = lambda cid: f"https://app.hubspot.com/contacts/{PORTAL_ID}/company/{cid}"
@@ -226,8 +234,8 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
                              "descricao": f"CNPJ {cnpj} nao retorna na BrasilAPI — provavel typo, validar e corrigir",
                              "prioridade": "MEDIA"})
 
-        # 12. company com Match mas sem diagnostico
-        if cid in company_tem_ganho:
+        # 12. company com Match mas sem diagnostico (so Incentivador — Proponente nao tem diagnostico)
+        if cid in company_tem_ganho_incentivador:
             valor_diag = _num(p.get("valor_total_do_diagnostico"))
             soma_leis = sum(_num(p.get(l)) for l in LEIS)
             if valor_diag <= 0 and soma_leis <= 0:
@@ -349,12 +357,14 @@ def write_gaps_to_sheet(gaps, sh):
 
 
 def popular_gaps_sheet(deals, companies, deal_to_company, owners,
-                       ganho_stages, perdido_stages, gc):
+                       ganho_stages, perdido_stages, gc,
+                       ganho_stages_incentivador=None):
     """Entrypoint chamado de sync.py. `gc` e' o gspread client ja autenticado."""
     sheet_id = os.environ.get("GAPS_SHEET_ID", DEFAULT_GAPS_SHEET_ID)
     print(f"=== Fase 5: Sheet de Gaps (sheet_id={sheet_id[:12]}...) ===")
     gaps = compute_gaps(deals, companies, deal_to_company, owners,
-                        ganho_stages, perdido_stages)
+                        ganho_stages, perdido_stages,
+                        ganho_stages_incentivador=ganho_stages_incentivador)
     print(f"  Total de gaps computados: {len(gaps)}")
     sh = gc.open_by_key(sheet_id)
     write_gaps_to_sheet(gaps, sh)

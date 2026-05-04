@@ -1322,6 +1322,12 @@ def main():
                         if info.get("is_closed") and info.get("probability") == "1.0"}
         perdido_stages = {sid for sid, info in stages.items()
                           if info.get("is_closed") and info.get("probability") == "0.0"}
+        # Diagnóstico só vale pra pipeline Incentivador (Ivan 04/05).
+        # Gap 12 não pode cobrar diagnóstico de Ganho Proponente.
+        ganho_stages_incentivador = {sid for sid, info in stages.items()
+                                     if info.get("is_closed")
+                                     and info.get("probability") == "1.0"
+                                     and info.get("pipeline_id") == "default"}
         gc = get_sheets_client()
         popular_gaps_sheet(
             deals=deals,
@@ -1330,6 +1336,7 @@ def main():
             owners=owners or {},
             ganho_stages=ganho_stages,
             perdido_stages=perdido_stages,
+            ganho_stages_incentivador=ganho_stages_incentivador,
             gc=gc,
         )
     except Exception as e:
