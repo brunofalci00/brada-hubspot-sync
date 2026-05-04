@@ -169,16 +169,22 @@ UF_NORMALIZE = {
 PRODUTO_PICKLIST_VALUE_TO_LABEL = {
     # Canonico pos-E1 (value==label)
     "Match": "Match",
+    "Match interno": "Match interno",  # Ivan 04/05: subdivisao Match
+    "Match externo": "Match externo",  # Ivan 04/05: subdivisao Match
     "Elaboração": "Elaboração",
     "AprovAI": "AprovAI",
     "Customização": "Customização",
     "Prestação": "Prestação",
+    "Lei do bem": "Lei do bem",  # Ivan 04/05: produto novo
     # Legado lowercase (fallback)
     "match": "Match",
+    "match interno": "Match interno",
+    "match externo": "Match externo",
     "elaboracao": "Elaboração",
     "aprovai": "AprovAI",
     "customizacao": "Customização",
     "prestacao": "Prestação",
+    "lei do bem": "Lei do bem",
 }
 
 COMPANY_PROPERTIES = [
