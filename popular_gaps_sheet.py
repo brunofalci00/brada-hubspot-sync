@@ -19,8 +19,11 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import gspread
+
+BRT = ZoneInfo("America/Sao_Paulo")
 
 PORTAL_ID = "50771078"
 DEFAULT_GAPS_SHEET_ID = "1GQe6ksTrQnoWNtFm2BF3WblkHiaNGdKK7ycf1qx-oSs"
@@ -299,7 +302,7 @@ def write_gaps_to_sheet(gaps, sh):
     last_row = len(rows) + 1
     aba.format(f"A{last_row}:Z{last_row}", {"textFormat": {"bold": True},
                                             "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
-    aba.update(values=[[f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}"]],
+    aba.update(values=[[f"Atualizado em {datetime.now(BRT).strftime('%d/%m/%Y %H:%M')} (BRT)"]],
                range_name=f"A{last_row + 2}", value_input_option="USER_ENTERED")
     print(f"  Resumo: {len(todos_owners)} executivos, {len(todos_tipos)} tipos, {grand_total} gaps")
     time.sleep(1.5)
