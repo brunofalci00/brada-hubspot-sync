@@ -44,7 +44,8 @@ DEAL_PROPERTIES = [
     "pipeline",
     "hubspot_owner_id",
     "valor_do_aporte",
-    "valor_total_do_diagnostico",  # valor projetado pos diagnostico (ja existe)
+    "valor_total_do_diagnostico",  # legado pre-migracao (escondido 05/05, mantido pra leitura historica)
+    "valor_diagnostico_empresa",  # 05/05: espelho de Company.vtd no Deal lider (1 por empresa)
     "data_da_realizacao_do_diagnostico",
     "data_do_aporte",
     "executivo_responsavel",
@@ -912,6 +913,104 @@ def patch_default_trabalhado_por(raw_deals):
     return atualizados
 
 
+def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company, ganho_stages_incentivador):
+    """Espelha Company.valor_total_do_diagnostico em UM Deal por Company (Deal lider).
+
+    Pos-migracao 27/04, diagnostico mora em Company. Cards nativos de view de
+    Deal so somam property do Deal — quem preencheu na Company nao via valor
+    refletido. Esta funcao escreve o valor da Company no Deal "lider" (mais
+    antigo Ganho > mais antigo ativo > mais antigo qualquer), zera nos outros.
+
+    Resolve UX da Jessica (05/05) sem reintroduzir bug MATIFIC: 1 Company =
+    1 Deal carrega o valor, demais Deals da mesma Company exibem 0. Card SUM
+    em view nativa do HubSpot conta cada empresa 1x.
+
+    Property: `valor_diagnostico_empresa` (criada via API 05/05). Property
+    legada `valor_total_do_diagnostico` em Deal foi escondida no mesmo dia.
+
+    Idempotente — so PATCH se valor desejado != valor atual.
+    """
+    # Index Company -> deals (com props necessarias)
+    company_to_deals = defaultdict(list)
+    deal_props_idx = {d["id"]: d.get("properties", {}) or {} for d in deals_list}
+    for did, cid in deal_to_company.items():
+        if cid and did in deal_props_idx:
+            company_to_deals[str(cid)].append(did)
+
+    patches_lider = 0
+    patches_zero = 0
+    pulou_correto = 0
+    sem_deals = 0
+    erros = 0
+
+    for c in companies_list:
+        cid = str(c.get("id") or "")
+        p = c.get("properties", {}) or {}
+        try:
+            vtd_company = float(p.get("valor_total_do_diagnostico") or 0)
+        except (ValueError, TypeError):
+            vtd_company = 0
+        if vtd_company <= 0:
+            continue
+
+        deal_ids_da_cia = company_to_deals.get(cid, [])
+        if not deal_ids_da_cia:
+            sem_deals += 1
+            continue
+
+        # Eleger Deal lider — Tier 1: Ganho mais antigo
+        ganhos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia
+                  if deal_props_idx[did].get("dealstage", "") in ganho_stages_incentivador]
+        ativos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia
+                  if not deal_props_idx[did].get("hs_is_closed_won")
+                  and deal_props_idx[did].get("dealstage", "") not in ganho_stages_incentivador
+                  and deal_props_idx[did].get("dealstage", "") != "closedlost"]
+
+        def _key_create(item):
+            return item[1].get("createdate") or "9999"
+        def _key_close(item):
+            return item[1].get("closedate") or "9999"
+
+        if ganhos:
+            ganhos.sort(key=_key_close)
+            lider_id = ganhos[0][0]
+        elif ativos:
+            ativos.sort(key=_key_create)
+            lider_id = ativos[0][0]
+        else:
+            todos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia]
+            todos.sort(key=_key_create)
+            lider_id = todos[0][0]
+
+        # PATCH lider (se valor diferente) e zerar outros (se diferente)
+        for did in deal_ids_da_cia:
+            atual = deal_props_idx[did].get("valor_diagnostico_empresa")
+            try:
+                atual_num = float(atual) if atual not in (None, "") else 0
+            except (ValueError, TypeError):
+                atual_num = 0
+            desejado = vtd_company if did == lider_id else 0
+            if abs(atual_num - desejado) < 0.01:
+                pulou_correto += 1
+                continue
+            r = req("PATCH", f"/crm/v3/objects/deals/{did}",
+                    json={"properties": {"valor_diagnostico_empresa": str(desejado)}})
+            if r.status_code == 200:
+                if did == lider_id:
+                    patches_lider += 1
+                else:
+                    patches_zero += 1
+            else:
+                erros += 1
+                if erros <= 3:
+                    print(f"  [erro] PATCH deal {did}: {r.status_code} {r.text[:150]}")
+            time.sleep(0.05)
+
+    print(f"sync_diagnostico_para_deal_lider: lider={patches_lider} | zerado={patches_zero} | "
+          f"ja_correto={pulou_correto} | company_sem_deals={sem_deals} | erros={erros}")
+    return patches_lider + patches_zero
+
+
 def patch_company_localizacao_via_cnpj(companies_list):
     """Auto-preenche state/city/zip da Company via BrasilAPI quando CNPJ existe e
     o campo correspondente esta vazio.
@@ -1310,6 +1409,23 @@ def main():
         patch_company_localizacao_via_cnpj(all_companies)
         # Re-fetch pra pegar valores recem-patchados (Companies eh objeto leve, tolerable)
         all_companies = fetch_all_companies()
+
+        # 05/05: espelha Company.valor_total_do_diagnostico no Deal lider de cada Company.
+        # Resolve UX da Jessica — cards nativos da view de Deal somam o diagnostico
+        # da empresa sem duplicar (1 Deal lider por Company carrega o valor; outros = 0).
+        try:
+            ganho_stages_incentivador_main = {sid for sid, info in stages.items()
+                                              if info.get("is_closed")
+                                              and info.get("probability") == "1.0"
+                                              and info.get("pipeline_id") == "default"}
+            sync_diagnostico_para_deal_lider(
+                companies_list=all_companies,
+                deals_list=deals,
+                deal_to_company=deal_to_company,
+                ganho_stages_incentivador=ganho_stages_incentivador_main,
+            )
+        except Exception as e:
+            print(f"[warn] sync_diagnostico_para_deal_lider falhou: {e}")
 
     if all_companies:
         num_deals_by_cid = defaultdict(int)
