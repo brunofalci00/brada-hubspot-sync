@@ -914,16 +914,29 @@ def patch_default_trabalhado_por(raw_deals):
 
 
 def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company, ganho_stages_incentivador):
-    """Espelha Company.valor_total_do_diagnostico em UM Deal por Company (Deal lider).
+    """Espelha Company.valor_total_do_diagnostico em 1 Deal por (Company, stage).
 
     Pos-migracao 27/04, diagnostico mora em Company. Cards nativos de view de
     Deal so somam property do Deal — quem preencheu na Company nao via valor
-    refletido. Esta funcao escreve o valor da Company no Deal "lider" (mais
-    antigo Ganho > mais antigo ativo > mais antigo qualquer), zera nos outros.
+    refletido.
 
-    Resolve UX da Jessica (05/05) sem reintroduzir bug MATIFIC: 1 Company =
-    1 Deal carrega o valor, demais Deals da mesma Company exibem 0. Card SUM
-    em view nativa do HubSpot conta cada empresa 1x.
+    Regra (atualizada 05/05 tarde — antes era "lider global por Company", mas
+    Companies multi-stage perdiam visibilidade quando o lider global nao
+    coincidia com o stage filtrado pelo card):
+
+      Para cada Company com VTD > 0:
+        Para cada stage onde a Company tem deals:
+          Eleger 1 lider naquele stage (mais antigo do stage por createdate)
+          Lider recebe valor_diagnostico_empresa = Company.VTD
+          Outros do MESMO stage zerados
+
+    Resultado: cards de view de Deal filtrados por stage somam cada Company 1x
+    em cada stage onde ela esta presente. Sem bug MATIFIC (4 Ganhos da mesma
+    Company viram 1 lider em Ganho + 3 zerados). Sem perda de DRYKO (deals em
+    [EV] Prospects e [EV+Match] tem cada um seu lider).
+
+    Limitacao conhecida: card SEM filtro de stage que faz SUM duplica
+    Companies multi-stage. Banner: "use sempre com filtro de stage".
 
     Property: `valor_diagnostico_empresa` (criada via API 05/05). Property
     legada `valor_total_do_diagnostico` em Deal foi escondida no mesmo dia.
@@ -958,45 +971,33 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
             sem_deals += 1
             continue
 
-        # Eleger Deal lider — Tier 1: Ganho mais antigo
-        ganhos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia
-                  if deal_props_idx[did].get("dealstage", "") in ganho_stages_incentivador]
-        ativos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia
-                  if not deal_props_idx[did].get("hs_is_closed_won")
-                  and deal_props_idx[did].get("dealstage", "") not in ganho_stages_incentivador
-                  and deal_props_idx[did].get("dealstage", "") != "closedlost"]
+        # Agrupa deals por stage (regra 05/05 tarde: 1 lider por stage)
+        deals_por_stage = defaultdict(list)
+        for did in deal_ids_da_cia:
+            stage = deal_props_idx[did].get("dealstage", "")
+            deals_por_stage[stage].append(did)
 
-        def _key_create(item):
-            return item[1].get("createdate") or "9999"
-        def _key_close(item):
-            return item[1].get("closedate") or "9999"
+        # Conjunto dos lideres (1 por stage, mais antigo do stage)
+        lideres = set()
+        for stage, dids in deals_por_stage.items():
+            dids.sort(key=lambda d: deal_props_idx[d].get("createdate") or "9999")
+            lideres.add(dids[0])
 
-        if ganhos:
-            ganhos.sort(key=_key_close)
-            lider_id = ganhos[0][0]
-        elif ativos:
-            ativos.sort(key=_key_create)
-            lider_id = ativos[0][0]
-        else:
-            todos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia]
-            todos.sort(key=_key_create)
-            lider_id = todos[0][0]
-
-        # PATCH lider (se valor diferente) e zerar outros (se diferente)
+        # PATCH: lideres recebem VTD, demais zerados
         for did in deal_ids_da_cia:
             atual = deal_props_idx[did].get("valor_diagnostico_empresa")
             try:
                 atual_num = float(atual) if atual not in (None, "") else 0
             except (ValueError, TypeError):
                 atual_num = 0
-            desejado = vtd_company if did == lider_id else 0
+            desejado = vtd_company if did in lideres else 0
             if abs(atual_num - desejado) < 0.01:
                 pulou_correto += 1
                 continue
             r = req("PATCH", f"/crm/v3/objects/deals/{did}",
                     json={"properties": {"valor_diagnostico_empresa": str(desejado)}})
             if r.status_code == 200:
-                if did == lider_id:
+                if did in lideres:
                     patches_lider += 1
                 else:
                     patches_zero += 1
@@ -1006,7 +1007,7 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
                     print(f"  [erro] PATCH deal {did}: {r.status_code} {r.text[:150]}")
             time.sleep(0.05)
 
-    print(f"sync_diagnostico_para_deal_lider: lider={patches_lider} | zerado={patches_zero} | "
+    print(f"sync_diagnostico_para_deal_lider: lider_por_stage={patches_lider} | zerado={patches_zero} | "
           f"ja_correto={pulou_correto} | company_sem_deals={sem_deals} | erros={erros}")
     return patches_lider + patches_zero
 
