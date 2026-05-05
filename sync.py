@@ -1043,7 +1043,7 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
 
     print(f"sync_diagnostico_para_deal_lider: patches={patches} | ja_correto={pulou_correto} | "
           f"company_sem_deals={sem_deals} | erros={erros}")
-    return patches_lider + patches_zero
+    return patches
 
 
 def patch_company_localizacao_via_cnpj(companies_list):
