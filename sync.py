@@ -1275,26 +1275,31 @@ def _produto_meta_grupo(prod: str) -> str:
 
 
 def write_performance_sheet(enriched, gc):
-    """Agrega deals por ano x produto e faz join com metas_anuais.
+    """Agrega deals do ano corrente por produto e faz join com metas_anuais.
 
     Escreve aba raw_metas_anuais com dados pre-computados — sem necessidade
     de blend no Looker Studio.
 
     Colunas de saida:
-      ano, produto, vendido_brl, valor_projetado_ativo, n_ganhos, n_deals,
+      produto, vendido_brl, valor_projetado_ativo, n_ganhos_ano,
       meta_anual_brl, pct_meta
 
-    Decisao Ivan 04/05: medicao so anual (sazonalidade IR/ISS impede trimestre).
-    Match interno/externo agregam sob "Match" pro denominador da meta — meta
-    unica de R$ 4.1M abrange interno + externo (granularidade so pra mix).
+    Regras (decisao Bruno 05/05):
+      - vendido_brl = SUM(valor_vendido) onde e_ganho=1 AND year(closedate)=ano_corrente.
+        Bate com card "Fechado no periodo". Ganhos sem closedate ficam invisiveis
+        nesta tabela — cobranca via gap_closedate na Sheet de Gaps.
+      - valor_projetado_ativo = SUM snapshot do pipeline ativo, sem filtro de ano.
+      - n_ganhos_ano = count Ganhos com closedate no ano corrente (consistente com vendido).
+      - 1 linha por produto (ano corrente). Match interno/externo colapsam em "Match".
     """
     sh = gc.open_by_key(SPREADSHEET_ID)
+    ano_corrente = str(datetime.datetime.now().year)
 
-    # Ler metas_anuais (preenchida manualmente)
-    # Schema: produto, meta_anual_brl, ano, observacao
+    # Ler metas_anuais (preenchida manualmente). Filtra ano corrente.
     # IMPORTANTE: ler UNFORMATTED — display "90.000" gera ambiguidade locale
     # (Sheets parseia como 90.0 em vez de 90000). Unformatted retorna o valor cru.
     metas_idx = {}
+    anos_meta_encontrados = set()
     try:
         ws_metas = sh.worksheet("metas_anuais")
         rows = ws_metas.get("A1:D200", value_render_option="UNFORMATTED_VALUE")
@@ -1319,46 +1324,54 @@ def write_performance_sheet(enriched, gc):
                     s = str(meta_raw).replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
                     meta_v = float(s) if s else 0.0
                 if prod and ano:
-                    metas_idx[(ano, prod)] = meta_v
+                    anos_meta_encontrados.add(ano)
+                    if ano == ano_corrente:
+                        metas_idx[prod] = meta_v
     except gspread.exceptions.WorksheetNotFound:
         print("[warn] Aba metas_anuais nao encontrada — raw_metas_anuais sem metas")
 
-    # Agregar deals por ano x produto (com Match interno/externo -> Match)
+    if anos_meta_encontrados and ano_corrente not in anos_meta_encontrados:
+        print(f"[warn] metas_anuais nao tem linhas para ano corrente {ano_corrente}. "
+              f"Anos encontrados: {sorted(anos_meta_encontrados)}. "
+              f"raw_metas_anuais sera escrito sem metas.")
+
+    # Agregar deals (ano corrente) por produto. Match interno/externo -> Match.
     perf = defaultdict(lambda: {
         "vendido_brl": 0.0,
         "valor_projetado_ativo": 0.0,
-        "n_ganhos": 0,
-        "n_deals": 0,
+        "n_ganhos_ano": 0,
     })
     for d in enriched:
-        mes = str(d.get("mes_criacao", "")).strip()  # "YYYY-MM"
-        if not mes or "-" not in mes:
-            continue
-        ano = mes.split("-")[0]
         prod_raw = str(d.get("produto", "")).strip()
         prod = _produto_meta_grupo(prod_raw)
-        key = (ano, prod)
-        perf[key]["vendido_brl"] += float(d.get("valor_vendido", 0) or 0)
-        perf[key]["valor_projetado_ativo"] += float(d.get("valor_projetado_ativo", 0) or 0)
-        perf[key]["n_ganhos"] += int(d.get("e_ganho", 0) or 0)
-        perf[key]["n_deals"] += 1
+        if not prod:
+            continue
 
-    # FULL OUTER JOIN: uniao de chaves de metas e de deals
-    all_keys = sorted(set(metas_idx.keys()) | set(perf.keys()))
+        # projetado_ativo: snapshot independente de ano
+        perf[prod]["valor_projetado_ativo"] += float(d.get("valor_projetado_ativo", 0) or 0)
+
+        # vendido + n_ganhos: filtra por year(closedate) == ano_corrente
+        if int(d.get("e_ganho", 0) or 0) == 1:
+            close_str = str(d.get("closedate", "") or "")
+            ano_close = close_str[:4] if len(close_str) >= 4 else ""
+            if ano_close == ano_corrente:
+                perf[prod]["vendido_brl"] += float(d.get("valor_vendido", 0) or 0)
+                perf[prod]["n_ganhos_ano"] += 1
+
+    # FULL OUTER JOIN: uniao de chaves de metas e de deals (so produtos)
+    all_prods = sorted(set(metas_idx.keys()) | set(perf.keys()))
 
     rows_out = []
-    for (ano, prod) in all_keys:
-        meta_brl = metas_idx.get((ano, prod), 0) or 0
-        p = perf.get((ano, prod), {})
+    for prod in all_prods:
+        meta_brl = metas_idx.get(prod, 0) or 0
+        p = perf.get(prod, {})
         vendido = p.get("vendido_brl", 0) or 0
         pct_meta = round(vendido / meta_brl, 4) if meta_brl else ""
         rows_out.append({
-            "ano": ano,
             "produto": prod,
             "vendido_brl": round(vendido, 2),
             "valor_projetado_ativo": round(p.get("valor_projetado_ativo", 0) or 0, 2),
-            "n_ganhos": p.get("n_ganhos", 0) or 0,
-            "n_deals": p.get("n_deals", 0) or 0,
+            "n_ganhos_ano": p.get("n_ganhos_ano", 0) or 0,
             "meta_anual_brl": round(meta_brl, 2),
             "pct_meta": pct_meta,
         })
