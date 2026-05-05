@@ -1100,16 +1100,34 @@ def write_performance_sheet(enriched, gc):
 
     # Ler metas_anuais (preenchida manualmente)
     # Schema: produto, meta_anual_brl, ano, observacao
+    # IMPORTANTE: ler UNFORMATTED — display "90.000" gera ambiguidade locale
+    # (Sheets parseia como 90.0 em vez de 90000). Unformatted retorna o valor cru.
     metas_idx = {}
     try:
         ws_metas = sh.worksheet("metas_anuais")
-        for m in ws_metas.get_all_records():
-            prod = str(m.get("produto", "") or m.get("Produto", "")).strip()
-            ano = str(m.get("ano", "") or m.get("Ano", "")).strip()
-            if prod and ano:
-                raw_meta = str(m.get("meta_anual_brl", 0) or 0)
-                raw_meta = raw_meta.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
-                metas_idx[(ano, prod)] = float(raw_meta) if raw_meta else 0.0
+        rows = ws_metas.get("A1:D200", value_render_option="UNFORMATTED_VALUE")
+        if rows:
+            header = [str(c).strip() for c in rows[0]]
+            try:
+                idx_prod = header.index("produto")
+                idx_meta = header.index("meta_anual_brl")
+                idx_ano = header.index("ano")
+            except ValueError:
+                print("[warn] metas_anuais: header inesperado — esperando produto, meta_anual_brl, ano")
+                rows = []
+            for r in rows[1:] if rows else []:
+                if len(r) <= max(idx_prod, idx_meta, idx_ano):
+                    continue
+                prod = str(r[idx_prod]).strip()
+                ano = str(r[idx_ano]).strip()
+                meta_raw = r[idx_meta]
+                if isinstance(meta_raw, (int, float)):
+                    meta_v = float(meta_raw)
+                else:
+                    s = str(meta_raw).replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
+                    meta_v = float(s) if s else 0.0
+                if prod and ano:
+                    metas_idx[(ano, prod)] = meta_v
     except gspread.exceptions.WorksheetNotFound:
         print("[warn] Aba metas_anuais nao encontrada — raw_metas_anuais sem metas")
 
