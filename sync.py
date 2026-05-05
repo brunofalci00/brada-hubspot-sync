@@ -45,7 +45,8 @@ DEAL_PROPERTIES = [
     "hubspot_owner_id",
     "valor_do_aporte",
     "valor_total_do_diagnostico",  # legado pre-migracao (escondido 05/05, mantido pra leitura historica)
-    "valor_diagnostico_empresa",  # 05/05: espelho de Company.vtd no Deal lider (1 por empresa)
+    "valor_diagnostico_empresa",  # 05/05: espelho de Company.vtd, lider POR STAGE (cards COM filtro etapa)
+    "valor_diagnostico_empresa_global",  # 05/05: espelho de Company.vtd, lider GLOBAL (cards SEM filtro etapa)
     "data_da_realizacao_do_diagnostico",
     "data_do_aporte",
     "executivo_responsavel",
@@ -914,34 +915,35 @@ def patch_default_trabalhado_por(raw_deals):
 
 
 def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company, ganho_stages_incentivador):
-    """Espelha Company.valor_total_do_diagnostico em 1 Deal por (Company, stage).
+    """Espelha Company.valor_total_do_diagnostico em 2 properties do Deal.
 
     Pos-migracao 27/04, diagnostico mora em Company. Cards nativos de view de
     Deal so somam property do Deal — quem preencheu na Company nao via valor
-    refletido.
+    refletido. Esta funcao mantem 2 properties em paralelo, cada uma servindo
+    um caso de uso distinto:
 
-    Regra (atualizada 05/05 tarde — antes era "lider global por Company", mas
-    Companies multi-stage perdiam visibilidade quando o lider global nao
-    coincidia com o stage filtrado pelo card):
+    1) `valor_diagnostico_empresa` (lider POR STAGE)
+       Para cada (Company, stage), 1 deal lider (mais antigo do stage) recebe
+       VTD. Demais do mesmo stage zerados. Use em cards/relatorios COM filtro
+       de etapa — cada Company contribui 1x por etapa onde tem deal.
 
-      Para cada Company com VTD > 0:
-        Para cada stage onde a Company tem deals:
-          Eleger 1 lider naquele stage (mais antigo do stage por createdate)
-          Lider recebe valor_diagnostico_empresa = Company.VTD
-          Outros do MESMO stage zerados
+    2) `valor_diagnostico_empresa_global` (lider GLOBAL por Company)
+       Para cada Company, 1 unico deal lider (Ganho mais antigo > Ativo mais
+       antigo > Mais antigo qualquer) recebe VTD. Demais zerados. Use em
+       cards/relatorios SEM filtro de etapa — soma agregada sem duplicar
+       Companies multi-stage.
 
-    Resultado: cards de view de Deal filtrados por stage somam cada Company 1x
-    em cada stage onde ela esta presente. Sem bug MATIFIC (4 Ganhos da mesma
-    Company viram 1 lider em Ganho + 3 zerados). Sem perda de DRYKO (deals em
-    [EV] Prospects e [EV+Match] tem cada um seu lider).
+    Resultado:
+      - Card POR ETAPA (Diagnostico/Projetos/Ganho da view Jessica): use
+        property #1 com SUM. Cada Company aparece 1x na etapa.
+      - Card de TOTAL GERAL (sem filtro de etapa): use property #2 com SUM.
+        Cada Company contribui 1x na soma total.
 
-    Limitacao conhecida: card SEM filtro de stage que faz SUM duplica
-    Companies multi-stage. Banner: "use sempre com filtro de stage".
+    Idempotente — so PATCH se valor desejado != valor atual. Combina ambas
+    properties em 1 unico PATCH por deal (eficiencia).
 
-    Property: `valor_diagnostico_empresa` (criada via API 05/05). Property
-    legada `valor_total_do_diagnostico` em Deal foi escondida no mesmo dia.
-
-    Idempotente — so PATCH se valor desejado != valor atual.
+    Sem bug MATIFIC: 4 Ganhos da mesma Company viram 1 lider + 3 zerados em
+    AMBAS properties.
     """
     # Index Company -> deals (com props necessarias)
     company_to_deals = defaultdict(list)
@@ -950,8 +952,7 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
         if cid and did in deal_props_idx:
             company_to_deals[str(cid)].append(did)
 
-    patches_lider = 0
-    patches_zero = 0
+    patches = 0
     pulou_correto = 0
     sem_deals = 0
     erros = 0
@@ -971,44 +972,77 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
             sem_deals += 1
             continue
 
-        # Agrupa deals por stage (regra 05/05 tarde: 1 lider por stage)
+        # ===== Lider POR STAGE (property #1) =====
         deals_por_stage = defaultdict(list)
         for did in deal_ids_da_cia:
             stage = deal_props_idx[did].get("dealstage", "")
             deals_por_stage[stage].append(did)
-
-        # Conjunto dos lideres (1 por stage, mais antigo do stage)
-        lideres = set()
+        lideres_stage = set()
         for stage, dids in deals_por_stage.items():
             dids.sort(key=lambda d: deal_props_idx[d].get("createdate") or "9999")
-            lideres.add(dids[0])
+            lideres_stage.add(dids[0])
 
-        # PATCH: lideres recebem VTD, demais zerados
+        # ===== Lider GLOBAL (property #2) =====
+        # Tier 1: Ganho Incentivador mais antigo (closedate ASC)
+        # Tier 2: Ativo (nao-fechado) mais antigo (createdate ASC)
+        # Tier 3: Mais antigo qualquer (createdate ASC)
+        ganhos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia
+                  if deal_props_idx[did].get("dealstage", "") in ganho_stages_incentivador]
+        ativos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia
+                  if deal_props_idx[did].get("dealstage", "") not in ganho_stages_incentivador
+                  and deal_props_idx[did].get("dealstage", "") != "closedlost"]
+
+        if ganhos:
+            ganhos.sort(key=lambda x: x[1].get("closedate") or "9999")
+            lider_global_id = ganhos[0][0]
+        elif ativos:
+            ativos.sort(key=lambda x: x[1].get("createdate") or "9999")
+            lider_global_id = ativos[0][0]
+        else:
+            todos = [(did, deal_props_idx[did]) for did in deal_ids_da_cia]
+            todos.sort(key=lambda x: x[1].get("createdate") or "9999")
+            lider_global_id = todos[0][0]
+
+        # PATCH: 1 unico PATCH por deal com ambas properties
         for did in deal_ids_da_cia:
-            atual = deal_props_idx[did].get("valor_diagnostico_empresa")
+            props_atuais = deal_props_idx[did]
+
+            atual_stage = props_atuais.get("valor_diagnostico_empresa")
+            atual_global = props_atuais.get("valor_diagnostico_empresa_global")
             try:
-                atual_num = float(atual) if atual not in (None, "") else 0
+                atual_stage_num = float(atual_stage) if atual_stage not in (None, "") else 0
             except (ValueError, TypeError):
-                atual_num = 0
-            desejado = vtd_company if did in lideres else 0
-            if abs(atual_num - desejado) < 0.01:
+                atual_stage_num = 0
+            try:
+                atual_global_num = float(atual_global) if atual_global not in (None, "") else 0
+            except (ValueError, TypeError):
+                atual_global_num = 0
+
+            desejado_stage = vtd_company if did in lideres_stage else 0
+            desejado_global = vtd_company if did == lider_global_id else 0
+
+            payload = {}
+            if abs(atual_stage_num - desejado_stage) >= 0.01:
+                payload["valor_diagnostico_empresa"] = str(desejado_stage)
+            if abs(atual_global_num - desejado_global) >= 0.01:
+                payload["valor_diagnostico_empresa_global"] = str(desejado_global)
+
+            if not payload:
                 pulou_correto += 1
                 continue
+
             r = req("PATCH", f"/crm/v3/objects/deals/{did}",
-                    json={"properties": {"valor_diagnostico_empresa": str(desejado)}})
+                    json={"properties": payload})
             if r.status_code == 200:
-                if did in lideres:
-                    patches_lider += 1
-                else:
-                    patches_zero += 1
+                patches += 1
             else:
                 erros += 1
                 if erros <= 3:
                     print(f"  [erro] PATCH deal {did}: {r.status_code} {r.text[:150]}")
             time.sleep(0.05)
 
-    print(f"sync_diagnostico_para_deal_lider: lider_por_stage={patches_lider} | zerado={patches_zero} | "
-          f"ja_correto={pulou_correto} | company_sem_deals={sem_deals} | erros={erros}")
+    print(f"sync_diagnostico_para_deal_lider: patches={patches} | ja_correto={pulou_correto} | "
+          f"company_sem_deals={sem_deals} | erros={erros}")
     return patches_lider + patches_zero
 
 
