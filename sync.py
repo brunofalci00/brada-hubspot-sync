@@ -47,6 +47,7 @@ DEAL_PROPERTIES = [
     "valor_total_do_diagnostico",  # legado pre-migracao (escondido 05/05, mantido pra leitura historica)
     "valor_diagnostico_empresa",  # 05/05: espelho de Company.vtd, lider POR STAGE (cards COM filtro etapa)
     "valor_diagnostico_empresa_global",  # 05/05: espelho de Company.vtd, lider GLOBAL (cards SEM filtro etapa)
+    "amount",  # 05/05: espelhado = valor_do_aporte pelo cron (header e kanban totalizers)
     "data_da_realizacao_do_diagnostico",
     "data_do_aporte",
     "executivo_responsavel",
@@ -1046,6 +1047,63 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
     return patches
 
 
+def sync_amount_para_aporte(deals_list):
+    """Espelha valor_do_aporte → amount em cada Deal.
+
+    `amount` eh property nativa do HubSpot exibida no header do registro
+    e somada nos totalizadores do kanban board. Em Starter, esses dois
+    elementos NAO permitem trocar a property. Workaround: manter amount
+    sincronizado com valor_do_aporte (a fonte de verdade da Brada).
+
+    Idempotente — so PATCH se amount != valor_do_aporte. Pula Deals com
+    aporte vazio (nao zera amount existente — preserva possivel auto-calculo
+    de line items, raro mas possivel).
+
+    Trade-off conhecido: se algum Deal usar line items no futuro, o
+    auto-calculo do HubSpot vai brigar com o cron. Como Brada nao usa
+    line items hoje, nao e problema. Detectar virtualmente custa 1
+    request extra por deal — nao vale a pena agora.
+    """
+    patches = 0
+    pulou_correto = 0
+    pulou_aporte_vazio = 0
+    erros = 0
+
+    for d in deals_list:
+        did = d["id"]
+        p = d.get("properties", {}) or {}
+        try:
+            aporte = float(p.get("valor_do_aporte") or 0)
+        except (ValueError, TypeError):
+            aporte = 0
+        try:
+            amount_atual = float(p.get("amount") or 0)
+        except (ValueError, TypeError):
+            amount_atual = 0
+
+        if aporte <= 0:
+            pulou_aporte_vazio += 1
+            continue
+
+        if abs(amount_atual - aporte) < 0.01:
+            pulou_correto += 1
+            continue
+
+        r = req("PATCH", f"/crm/v3/objects/deals/{did}",
+                json={"properties": {"amount": str(aporte)}})
+        if r.status_code == 200:
+            patches += 1
+        else:
+            erros += 1
+            if erros <= 3:
+                print(f"  [erro] PATCH amount deal {did}: {r.status_code} {r.text[:150]}")
+        time.sleep(0.05)
+
+    print(f"sync_amount_para_aporte: patches={patches} | ja_correto={pulou_correto} | "
+          f"aporte_vazio={pulou_aporte_vazio} | erros={erros}")
+    return patches
+
+
 def patch_company_localizacao_via_cnpj(companies_list):
     """Auto-preenche state/city/zip da Company via BrasilAPI quando CNPJ existe e
     o campo correspondente esta vazio.
@@ -1461,6 +1519,14 @@ def main():
             )
         except Exception as e:
             print(f"[warn] sync_diagnostico_para_deal_lider falhou: {e}")
+
+        # 05/05: espelha valor_do_aporte -> amount pra header/kanban refletirem
+        # o valor real (em vez de "—"). Property nativa do HubSpot Starter nao
+        # permite trocar qual campo aparece no header/totalizadores.
+        try:
+            sync_amount_para_aporte(deals)
+        except Exception as e:
+            print(f"[warn] sync_amount_para_aporte falhou: {e}")
 
     if all_companies:
         num_deals_by_cid = defaultdict(int)
