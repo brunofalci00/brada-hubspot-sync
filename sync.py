@@ -1047,6 +1047,112 @@ def sync_diagnostico_para_deal_lider(companies_list, deals_list, deal_to_company
     return patches
 
 
+def patch_company_diag_from_aporte_ganho(companies_list, deals_list, deal_to_company,
+                                          ganho_stages_incentivador):
+    """Auto-preenche Company.valor_total_do_diagnostico via SOMA dos aportes
+    de Ganhos do pipeline Incentivador associados.
+
+    Regra (decisao Bruno 11/05/2026):
+      - Company.valor_total_do_diagnostico esta vazio/0
+      - E tem >=1 Deal em stage Ganho do pipeline Incentivador
+      - E esse(s) Deal(s) tem valor_do_aporte > 0
+      -> PATCH Company.valor_total_do_diagnostico = sum(valor_do_aporte dos Ganhos Inc)
+
+    Premissa: cada Deal Ganho eh um aporte (parcial ou total) do diagnostico
+    da empresa. A soma dos aportes vendidos eh piso conservador do diagnostico
+    real (que inclui fatias nao-vendidas). Subestima o potencial mas eh melhor
+    que zero.
+
+    Multiplos Ganhos: SOMA todos. Empresa pode usar varias leis em paralelo
+    no mesmo ano fiscal (cada Ganho eh uma fatia do potencial total
+    monetizado).
+
+    Re-execucao: idempotente. Uma vez preenchida, regra "nao sobrescrever"
+    protege valor existente (manual ou auto). Pra incluir Ganhos posteriores,
+    apagar manualmente o VTD da Company -> proximo cron recalcula sum.
+
+    Auditoria sem flag nova (decisao Bruno — nao complicar schema): rastrear
+    via comparacao derivada (Company.VTD == sum(aportes Ganhos Inc) implica
+    auto-preenchido).
+
+    Idempotente. Batch update 100/100. Sem lookback (processa base inteira;
+    rodadas subsequentes skipam Companies ja preenchidas).
+    """
+    # Index Company -> deals associados
+    company_to_deals = defaultdict(list)
+    deal_props_idx = {d["id"]: d.get("properties", {}) or {} for d in deals_list}
+    for did, cid in deal_to_company.items():
+        if cid and did in deal_props_idx:
+            company_to_deals[str(cid)].append(did)
+
+    inputs = []
+    sem_ganho_inc = 0
+    ja_preenchido = 0
+    sem_deals = 0
+
+    for c in companies_list:
+        cid = str(c.get("id") or "")
+        p = c.get("properties", {}) or {}
+
+        # So preenche se VTD vazio/0
+        try:
+            vtd_atual = float(p.get("valor_total_do_diagnostico") or 0)
+        except (ValueError, TypeError):
+            vtd_atual = 0
+        if vtd_atual > 0:
+            ja_preenchido += 1
+            continue
+
+        deal_ids_da_cia = company_to_deals.get(cid, [])
+        if not deal_ids_da_cia:
+            sem_deals += 1
+            continue
+
+        # Filtra Ganhos Incentivador com aporte > 0
+        soma_aportes = 0.0
+        n_ganhos_qualificados = 0
+        for did in deal_ids_da_cia:
+            props = deal_props_idx.get(did, {}) or {}
+            if props.get("dealstage", "") not in ganho_stages_incentivador:
+                continue
+            try:
+                aporte = float(props.get("valor_do_aporte") or 0)
+            except (ValueError, TypeError):
+                aporte = 0
+            if aporte <= 0:
+                continue
+            soma_aportes += aporte
+            n_ganhos_qualificados += 1
+
+        if n_ganhos_qualificados == 0:
+            sem_ganho_inc += 1
+            continue
+
+        inputs.append({
+            "id": cid,
+            "properties": {"valor_total_do_diagnostico": str(int(soma_aportes))},
+        })
+
+    # Batch update 100/100
+    patches = 0
+    erros = 0
+    for i in range(0, len(inputs), 100):
+        chunk = inputs[i:i + 100]
+        r = req("POST", "/crm/v3/objects/companies/batch/update", json={"inputs": chunk})
+        if r.status_code in (200, 207):
+            patches += len(chunk)
+        else:
+            erros += len(chunk)
+            if erros <= 3:
+                print(f"  [erro] batch chunk {i}: {r.status_code} {r.text[:200]}")
+        time.sleep(0.1)
+
+    print(f"patch_company_diag_from_aporte_ganho: patches={patches} | "
+          f"ja_preenchido={ja_preenchido} | sem_ganho_inc={sem_ganho_inc} | "
+          f"sem_deals={sem_deals} | erros={erros}")
+    return patches
+
+
 def sync_amount_para_aporte(deals_list):
     """Espelha valor_do_aporte → amount em cada Deal.
 
@@ -1524,6 +1630,22 @@ def main():
                                               if info.get("is_closed")
                                               and info.get("probability") == "1.0"
                                               and info.get("pipeline_id") == "default"}
+
+            # 11/05: auto-preenche Company.valor_total_do_diagnostico via SOMA dos
+            # aportes de Ganhos Incentivador. Roda ANTES do espelho pro Deal lider
+            # — assim o espelho ja pega o valor recem-preenchido na mesma rodada.
+            try:
+                patch_company_diag_from_aporte_ganho(
+                    companies_list=all_companies,
+                    deals_list=deals,
+                    deal_to_company=deal_to_company,
+                    ganho_stages_incentivador=ganho_stages_incentivador_main,
+                )
+                # Re-fetch pra Deal lider pegar VTD recem-preenchido
+                all_companies = fetch_all_companies()
+            except Exception as e:
+                print(f"[warn] patch_company_diag_from_aporte_ganho falhou: {e}")
+
             sync_diagnostico_para_deal_lider(
                 companies_list=all_companies,
                 deals_list=deals,
