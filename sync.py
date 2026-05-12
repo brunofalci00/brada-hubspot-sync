@@ -529,6 +529,8 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
     dias_desde_criacao = (now - createdate).days if createdate else None
     mes_criacao = createdate.strftime("%Y-%m") if createdate else ""
     ano_criacao = createdate.strftime("%Y") if createdate else ""
+    mes_fechamento = closedate.strftime("%Y-%m") if closedate else ""
+    ano_fechamento = closedate.strftime("%Y") if closedate else ""
 
     entered_stage = parse_dt(p.get("hs_v2_date_entered_current_stage"))
     dias_no_stage = (now - entered_stage).days if entered_stage else None
@@ -631,6 +633,8 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "data_do_aporte": p.get("data_do_aporte", ""),
         "ano_criacao": ano_criacao,
         "mes_criacao": mes_criacao,
+        "ano_fechamento": ano_fechamento,
+        "mes_fechamento": mes_fechamento,
         "dias_desde_criacao": dias_desde_criacao if dias_desde_criacao is not None else "",
         "dias_no_stage_atual": dias_no_stage if dias_no_stage is not None else "",
         # Company
