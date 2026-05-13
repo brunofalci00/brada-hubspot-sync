@@ -469,9 +469,11 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
 
     is_closed = stage_info.get("is_closed", False)
     prob = stage_info.get("probability", "")
-    e_ganho = 1 if (is_closed and prob == "1.0") else 0
+    # Pós Venda stages são abertos no HubSpot (limitação: só 1 closed-won por pipeline)
+    # mas representam deals já fechados — tratados como ganho para fins de revenue.
+    e_ganho = 1 if (is_closed and prob == "1.0") or stage_id in POS_VENDA_STAGES else 0
     e_perdido = 1 if (is_closed and prob == "0.0") else 0
-    e_ativo = 1 if not is_closed else 0
+    e_ativo = 1 if not is_closed and stage_id not in POS_VENDA_STAGES else 0
 
     def num(x):
         try:
@@ -732,7 +734,8 @@ def enrich_company(company, num_deals_by_cid, flags_by_cid=None):
 # PATCH BACK (lei_principal / linha_de_imposto_categoria)
 # ===================================================
 
-STAGES_GANHO = {"1253324968", "1253441207"}  # Incentivador + Proponente
+POS_VENDA_STAGES = {"contractsent", "1247329455", "1247329456"}  # Pré Projeto, Projeto em Andamento, Pós Projeto
+STAGES_GANHO = {"1253324968", "1253441207"} | POS_VENDA_STAGES  # Incentivador + Proponente + Pós Venda
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
 
 # Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
@@ -1630,10 +1633,13 @@ def main():
         # Resolve UX da Jessica — cards nativos da view de Deal somam o diagnostico
         # da empresa sem duplicar (1 Deal lider por Company carrega o valor; outros = 0).
         try:
-            ganho_stages_incentivador_main = {sid for sid, info in stages.items()
-                                              if info.get("is_closed")
-                                              and info.get("probability") == "1.0"
-                                              and info.get("pipeline_id") == "default"}
+            ganho_stages_incentivador_main = (
+                {sid for sid, info in stages.items()
+                 if info.get("is_closed")
+                 and info.get("probability") == "1.0"
+                 and info.get("pipeline_id") == "default"}
+                | {s for s in POS_VENDA_STAGES}
+            )
 
             # 11/05: auto-preenche Company.valor_total_do_diagnostico via SOMA dos
             # aportes de Ganhos Incentivador. Roda ANTES do espelho pro Deal lider
