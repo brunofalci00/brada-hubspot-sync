@@ -172,8 +172,6 @@ UF_NORMALIZE = {
 PRODUTO_PICKLIST_VALUE_TO_LABEL = {
     # Canonico pos-E1 (value==label)
     "Match": "Match",
-    "Match interno": "Match interno",  # Ivan 04/05: subdivisao Match
-    "Match externo": "Match externo",  # Ivan 04/05: subdivisao Match
     "Elaboração": "Elaboração",
     "AprovAI": "AprovAI",
     "Customização": "Customização",
@@ -181,8 +179,6 @@ PRODUTO_PICKLIST_VALUE_TO_LABEL = {
     "Lei do bem": "Lei do bem",  # Ivan 04/05: produto novo
     # Legado lowercase (fallback)
     "match": "Match",
-    "match interno": "Match interno",
-    "match externo": "Match externo",
     "elaboracao": "Elaboração",
     "aprovai": "AprovAI",
     "customizacao": "Customização",
@@ -1382,8 +1378,8 @@ def write_to_sheets(rows, header, worksheet_name=WORKSHEET_NAME,
     print(f"Sheets atualizado: {len(rows)} linhas em {worksheet_name}")
 
 
-# Match interno/externo agregam sob "Match" pra comparacao com meta anual
-# (Ivan 04/05: meta unica de Match, granularidade interno/externo so pra mix).
+# Guard rail caso valor legacy reapareça (Bruno 13/05: separação Match
+# interno/externo removida do picklist HubSpot; mapping fica como defesa).
 PRODUTO_META_NORMALIZE = {
     "Match interno": "Match",
     "Match externo": "Match",
@@ -1410,7 +1406,7 @@ def write_performance_sheet(enriched, gc):
         nesta tabela — cobranca via gap_closedate na Sheet de Gaps.
       - valor_projetado_ativo = SUM snapshot do pipeline ativo, sem filtro de ano.
       - n_ganhos_ano = count Ganhos com closedate no ano corrente (consistente com vendido).
-      - 1 linha por produto (ano corrente). Match interno/externo colapsam em "Match".
+      - 1 linha por produto (ano corrente). PRODUTO_META_NORMALIZE colapsa valores legacy (Match interno/externo) em "Match" como guard rail.
     """
     sh = gc.open_by_key(SPREADSHEET_ID)
     ano_corrente = str(datetime.datetime.now().year)
@@ -1455,7 +1451,8 @@ def write_performance_sheet(enriched, gc):
               f"Anos encontrados: {sorted(anos_meta_encontrados)}. "
               f"raw_metas_anuais sera escrito sem metas.")
 
-    # Agregar deals (ano corrente) por produto. Match interno/externo -> Match.
+    # Agregar deals (ano corrente) por produto. Guard rail: valores legacy
+    # (Match interno/externo) colapsam em "Match" via _produto_meta_grupo.
     perf = defaultdict(lambda: {
         "vendido_brl": 0.0,
         "valor_projetado_ativo": 0.0,
