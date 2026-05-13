@@ -471,9 +471,10 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
     prob = stage_info.get("probability", "")
     # Pós Venda stages são abertos no HubSpot (limitação: só 1 closed-won por pipeline)
     # mas representam deals já fechados — tratados como ganho para fins de revenue.
-    e_ganho = 1 if (is_closed and prob == "1.0") or stage_id in POS_VENDA_STAGES else 0
+    # VENDIDO_POS_VENDA cobre Incentivador + Proponente (definido perto da linha 740).
+    e_ganho = 1 if (is_closed and prob == "1.0") or stage_id in VENDIDO_POS_VENDA else 0
     e_perdido = 1 if (is_closed and prob == "0.0") else 0
-    e_ativo = 1 if not is_closed and stage_id not in POS_VENDA_STAGES else 0
+    e_ativo = 1 if not is_closed and stage_id not in VENDIDO_POS_VENDA else 0
 
     def num(x):
         try:
@@ -734,8 +735,14 @@ def enrich_company(company, num_deals_by_cid, flags_by_cid=None):
 # PATCH BACK (lei_principal / linha_de_imposto_categoria)
 # ===================================================
 
-POS_VENDA_STAGES = {"contractsent", "1247329455", "1247329456"}  # Pré Projeto, Projeto em Andamento, Pós Projeto
-STAGES_GANHO = {"1253324968", "1253441207"} | POS_VENDA_STAGES  # Incentivador + Proponente + Pós Venda
+POS_VENDA_STAGES = {"contractsent", "1247329455", "1247329456"}  # Pré Projeto, Projeto em Andamento, Pós Projeto (Incentivador)
+# Proponente (Ivan 13/05): venda efetuada em "Fechado" (closed-won), Acompanhamento + Ganho
+# são pós-venda (open mas já vendido — mesma lógica do POS_VENDA_STAGES do Incentivador).
+PROPONENTE_POS_VENDA_STAGES = {"1246571363", "1253441207"}  # Acompanhamento, Ganho
+# União de pós-venda dos dois pipelines (usado em enrich() pra e_ganho/e_ativo).
+VENDIDO_POS_VENDA = POS_VENDA_STAGES | PROPONENTE_POS_VENDA_STAGES
+# 1253324968 = Ganho Incentivador, 1246571362 = Fechado Proponente (closed-won dos dois pipelines)
+STAGES_GANHO = {"1253324968", "1246571362"} | VENDIDO_POS_VENDA
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
 
 # Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
@@ -1709,8 +1716,14 @@ def main():
     # feito acima — zero requests extras ao HubSpot.
     try:
         from popular_gaps_sheet import popular_gaps_sheet
-        ganho_stages = {sid for sid, info in stages.items()
-                        if info.get("is_closed") and info.get("probability") == "1.0"}
+        # Vendido = closed-won + pós-venda (Incentivador e Proponente).
+        # Garante que gaps cobrem todos os deals já vendidos, independente do pipeline.
+        ganho_stages = (
+            {sid for sid, info in stages.items()
+             if info.get("is_closed") and info.get("probability") == "1.0"}
+            | POS_VENDA_STAGES
+            | PROPONENTE_POS_VENDA_STAGES
+        )
         perdido_stages = {sid for sid, info in stages.items()
                           if info.get("is_closed") and info.get("probability") == "0.0"}
         # Diagnóstico só vale pra pipeline Incentivador (Ivan 04/05).
