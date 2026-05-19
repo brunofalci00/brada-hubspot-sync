@@ -84,6 +84,7 @@ DEAL_PROPERTIES = [
     "projeto_beneficiario_criap",
     "origem_deal_criap",
     "parceiro_indicador_criap",
+    "parceiro_indicador_nome_criap",  # AUTO sync.py via sync_parceiro_nome_criap (Sprint 0.5 19/05)
     "parceiro_indicador_cnpj_criap",  # AUTO sync.py via sync_parceiro_cnpj_criap
     "pronac_criap",
 ]
@@ -223,6 +224,7 @@ COMPANY_PROPERTIES = [
     "criap_total_aporte_2026",  # AUTO sync.py via compute_criap_rollups
     "criap_count_negocios_ativos",  # AUTO
     "criap_count_negocios_ganhos",  # AUTO
+    "criap_count_negocios_perdidos",  # AUTO (Sprint 0.5 19/05 — comparativo performance parceiro)
     "criap_projetos_apoiados_2026",  # AUTO (CSV)
 ]
 
@@ -1196,10 +1198,11 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
       (a) patrocinador via deal_to_company (associacao primaria)
       (b) parceiro indicador via deal.parceiro_indicador_criap (company_id em string)
 
-    4 props calculadas:
+    5 props calculadas (Sprint 0.5 19/05: incluido perdidos pra comparativo de parceiros):
       - criap_total_aporte_2026: soma valor_do_aporte de Ganhos 2026
       - criap_count_negocios_ativos: count deals nao-fechados (stage != Ganho/Perdido)
       - criap_count_negocios_ganhos: count deals em Ganho (qualquer data)
+      - criap_count_negocios_perdidos: count deals em Perdido (qualquer data)
       - criap_projetos_apoiados_2026: CSV projeto_beneficiario_criap distintos de Ganhos 2026
 
     Idempotente: PATCH so se valor mudou. Batch 100/100.
@@ -1237,6 +1240,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
         total_aporte_2026 = 0.0
         count_ativos = 0
         count_ganhos = 0
+        count_perdidos = 0
         projetos_2026 = set()
 
         for did in deal_ids:
@@ -1255,7 +1259,9 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
                     total_aporte_2026 += valor
                     if projeto:
                         projetos_2026.add(projeto)
-            elif stage not in (CRIAP_GANHO_STAGE_ID, CRIAP_PERDIDO_STAGE_ID):
+            elif stage == CRIAP_PERDIDO_STAGE_ID:
+                count_perdidos += 1
+            else:
                 count_ativos += 1
 
         # Comparar com valor atual da Company antes de PATCH (idempotencia)
@@ -1264,6 +1270,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
             "criap_total_aporte_2026": str(int(total_aporte_2026)),
             "criap_count_negocios_ativos": str(count_ativos),
             "criap_count_negocios_ganhos": str(count_ganhos),
+            "criap_count_negocios_perdidos": str(count_perdidos),
             "criap_projetos_apoiados_2026": ",".join(sorted(projetos_2026)),
         }
         delta = {k: v for k, v in novo.items() if str(atual.get(k) or "") != v}
@@ -1394,6 +1401,188 @@ def sync_parceiro_cnpj_criap(deals_list, companies_list):
     print(f"sync_parceiro_cnpj_criap: patches={patches} | ja_correto={pulou_correto} | "
           f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | erros={erros}")
     return patches
+
+
+def sync_parceiro_nome_criap(deals_list, companies_list):
+    """Espelha Company.name da parceira referenciada por Deal.parceiro_indicador_criap
+    pra Deal.parceiro_indicador_nome_criap. Permite leitura humana no card do deal
+    sem precisar abrir o cadastro da Company (Sprint 0.5 19/05, pedido Ivan).
+
+    Espelha sync_parceiro_cnpj_criap 1:1; so toca deals com produto='CRIAP'.
+    Idempotente: PATCH so se nome mudou.
+    """
+    name_by_company = {
+        str(c["id"]): (c.get("properties", {}) or {}).get("name", "") or ""
+        for c in companies_list
+    }
+    patches = 0
+    pulou_correto = 0
+    pulou_sem_parceiro = 0
+    pulou_nao_criap = 0
+    erros = 0
+
+    for d in deals_list:
+        did = d["id"]
+        p = d.get("properties", {}) or {}
+        if p.get("produto") != CRIAP_PRODUTO_VALUE:
+            pulou_nao_criap += 1
+            continue
+
+        parceiro_id = (p.get("parceiro_indicador_criap") or "").strip()
+        if not parceiro_id:
+            pulou_sem_parceiro += 1
+            continue
+
+        nome_correto = name_by_company.get(parceiro_id, "")
+        nome_atual = (p.get("parceiro_indicador_nome_criap") or "").strip()
+        if nome_atual == nome_correto:
+            pulou_correto += 1
+            continue
+
+        r = req("PATCH", f"/crm/v3/objects/deals/{did}",
+                json={"properties": {"parceiro_indicador_nome_criap": nome_correto}})
+        if r.status_code == 200:
+            patches += 1
+        else:
+            erros += 1
+            if erros <= 3:
+                print(f"  [erro] PATCH parceiro_nome deal {did}: {r.status_code} {r.text[:150]}")
+        time.sleep(0.05)
+
+    print(f"sync_parceiro_nome_criap: patches={patches} | ja_correto={pulou_correto} | "
+          f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | erros={erros}")
+    return patches
+
+
+# Sprint 0.5 19/05 — pedido Ivan: vinculo cliente<->parceiro explicito no card.
+# Custom association labels (Pro+) nao estao disponiveis em Starter; portanto usamos
+# typeId=341 (HubSpot defined, sem label) que ao menos coloca a Company parceira na
+# secao Companies do card do Deal e o Deal no tab Deals do card da Company parceira.
+# Validado via GET /crm/v4/associations/deals/companies/labels (19/05): retorna apenas
+# typeId=5 (Primary) e typeId=341 (sem label) — exatamente o que precisamos em Starter.
+HUBSPOT_DEAL_TO_COMPANY_TYPE_ID = 341
+HUBSPOT_DEAL_TO_COMPANY_PRIMARY_TYPE_ID = 5
+
+
+def sync_parceiro_associations_criap(deals_list, deal_to_company, dry_run=False):
+    """Mantem secondary association nativa Deal<->Company parceira (typeId=341).
+
+    Pra cada deal CRIAP:
+      1. GET associations atuais
+      2. Calcula expected_341 = {parceiro_indicador_criap} se preenchido e != primary
+      3. Calcula current_341 = companies associadas via typeId=341 (excluindo a primary)
+      4. PUT pra cada add (expected - current)
+      5. DELETE pra cada remove (current - expected) — APENAS typeId=341, nunca primary
+
+    SEGURANCAS:
+      - Filtro estrito typeId=341 (custom labels Pro+ tem outros typeIds, intocados)
+      - Assert defensivo: NUNCA DELETA se cid == primary_company_id
+      - Toca apenas deals com produto='CRIAP' (escopo CRIAP)
+      - dry_run=True so loga, nao chama PUT/DELETE
+    """
+    assocs_criadas = 0
+    assocs_removidas = 0
+    ja_correto = 0
+    pulou_nao_criap = 0
+    pulou_sem_parceiro_e_sem_341 = 0
+    erros = 0
+    deals_processados = 0
+
+    for d in deals_list:
+        did = d["id"]
+        p = d.get("properties", {}) or {}
+        if p.get("produto") != CRIAP_PRODUTO_VALUE:
+            pulou_nao_criap += 1
+            continue
+
+        deals_processados += 1
+        primary_cid = str(deal_to_company.get(did) or "")
+        parceiro_id = (p.get("parceiro_indicador_criap") or "").strip()
+
+        # expected: secondary typeId=341 = a Company parceira (se != primary)
+        expected_341 = set()
+        if parceiro_id and parceiro_id != primary_cid:
+            expected_341.add(parceiro_id)
+
+        # current: companies ja associadas com typeId=341 que NAO sao a primary
+        r = req("GET", f"/crm/v4/objects/deals/{did}/associations/companies")
+        if r.status_code != 200:
+            erros += 1
+            if erros <= 3:
+                print(f"  [erro] GET assocs deal {did}: {r.status_code} {r.text[:150]}")
+            continue
+        results = r.json().get("results", []) or []
+        current_341 = set()
+        for assoc in results:
+            cid = str(assoc.get("toObjectId") or "")
+            types = assoc.get("associationTypes", []) or []
+            has_341 = any(t.get("typeId") == HUBSPOT_DEAL_TO_COMPANY_TYPE_ID for t in types)
+            is_primary = any(t.get("typeId") == HUBSPOT_DEAL_TO_COMPANY_PRIMARY_TYPE_ID for t in types)
+            # Secondary = typeId=341 presente E NAO e a primary do deal
+            if has_341 and not is_primary:
+                current_341.add(cid)
+
+        to_add = expected_341 - current_341
+        to_remove = current_341 - expected_341
+
+        if not to_add and not to_remove:
+            if expected_341 or current_341:
+                ja_correto += 1
+            else:
+                pulou_sem_parceiro_e_sem_341 += 1
+            continue
+
+        # ADD
+        for cid in to_add:
+            if dry_run:
+                print(f"  [dry] ADD assoc 341: deal {did} <-> company {cid}")
+                assocs_criadas += 1
+                continue
+            body = [{"associationCategory": "HUBSPOT_DEFINED",
+                     "associationTypeId": HUBSPOT_DEAL_TO_COMPANY_TYPE_ID}]
+            r2 = req("PUT", f"/crm/v4/objects/deals/{did}/associations/companies/{cid}",
+                     json=body)
+            if r2.status_code in (200, 201):
+                assocs_criadas += 1
+            else:
+                erros += 1
+                if erros <= 3:
+                    print(f"  [erro] PUT assoc deal {did} -> company {cid}: {r2.status_code} {r2.text[:200]}")
+            time.sleep(0.05)
+
+        # REMOVE
+        for cid in to_remove:
+            # SEGURANCA CRITICA: nunca deletar a primary
+            if cid == primary_cid:
+                erros += 1
+                print(f"  [BUG] tentou remover primary deal={did} cid={cid} — bloqueado")
+                continue
+            if dry_run:
+                print(f"  [dry] DELETE assoc 341: deal {did} </> company {cid}")
+                assocs_removidas += 1
+                continue
+            # DELETE com array de tipos a remover (preserva outros labels se existirem)
+            body = [{"associationCategory": "HUBSPOT_DEFINED",
+                     "associationTypeId": HUBSPOT_DEAL_TO_COMPANY_TYPE_ID}]
+            r3 = req("DELETE", f"/crm/v4/objects/deals/{did}/associations/companies/{cid}/labels",
+                     json=body)
+            # Endpoint alternativo se 404 — DELETE simples remove a associacao inteira (sem labels custom em Starter e seguro)
+            if r3.status_code == 404:
+                r3 = req("DELETE", f"/crm/v4/objects/deals/{did}/associations/companies/{cid}")
+            if r3.status_code in (200, 204):
+                assocs_removidas += 1
+            else:
+                erros += 1
+                if erros <= 3:
+                    print(f"  [erro] DELETE assoc deal {did} </> company {cid}: {r3.status_code} {r3.text[:200]}")
+            time.sleep(0.05)
+
+    suffix = " [DRY-RUN]" if dry_run else ""
+    print(f"sync_parceiro_associations_criap{suffix}: assocs_criadas={assocs_criadas} | "
+          f"assocs_removidas={assocs_removidas} | ja_correto={ja_correto} | "
+          f"sem_parceiro_e_sem_341={pulou_sem_parceiro_e_sem_341} | "
+          f"nao_criap={pulou_nao_criap} | deals_processados={deals_processados} | erros={erros}")
+    return assocs_criadas + assocs_removidas
 
 
 def patch_company_localizacao_via_cnpj(companies_list):
@@ -1868,6 +2057,16 @@ def main():
             sync_parceiro_cnpj_criap(deals, all_companies or [])
         except Exception as e:
             print(f"[warn] sync_parceiro_cnpj_criap falhou: {e}")
+
+        try:
+            sync_parceiro_nome_criap(deals, all_companies or [])
+        except Exception as e:
+            print(f"[warn] sync_parceiro_nome_criap falhou: {e}")
+
+        try:
+            sync_parceiro_associations_criap(deals, deal_to_company)
+        except Exception as e:
+            print(f"[warn] sync_parceiro_associations_criap falhou: {e}")
 
     if all_companies:
         num_deals_by_cid = defaultdict(int)
