@@ -80,6 +80,12 @@ DEAL_PROPERTIES = [
     "valor_lei_da_reciclagem",
     "valor_pronas",
     "valor_pronon",
+    # CRIAP (Sprint 0 / S0.4 — Caminho 1 reuso Proponente)
+    "projeto_beneficiario_criap",
+    "origem_deal_criap",
+    "parceiro_indicador_criap",
+    "parceiro_indicador_cnpj_criap",  # AUTO sync.py via sync_parceiro_cnpj_criap
+    "pronac_criap",
 ]
 
 # Map interno: property -> label legivel pra lei_principal
@@ -177,6 +183,7 @@ PRODUTO_PICKLIST_VALUE_TO_LABEL = {
     "Customização": "Customização",
     "Prestação": "Prestação",
     "Lei do bem": "Lei do bem",  # Ivan 04/05: produto novo
+    "CRIAP": "CRIAP",  # Sprint 0 / S0.3 14/05: discrimina deals CRIAP dentro do pipeline Proponente
     # Legado lowercase (fallback)
     "match": "Match",
     "elaboracao": "Elaboração",
@@ -211,6 +218,12 @@ COMPANY_PROPERTIES = [
     "valor_lei_da_reciclagem",
     "valor_pronas",
     "valor_pronon",
+    # CRIAP (Sprint 0 / S0.4 — Caminho 1)
+    "papel_criap",  # multi-select: patrocinador, parceiro_indicador
+    "criap_total_aporte_2026",  # AUTO sync.py via compute_criap_rollups
+    "criap_count_negocios_ativos",  # AUTO
+    "criap_count_negocios_ganhos",  # AUTO
+    "criap_projetos_apoiados_2026",  # AUTO (CSV)
 ]
 
 WORKSHEET_NAME = "raw_deals"
@@ -741,6 +754,16 @@ VENDIDO_POS_VENDA = POS_VENDA_STAGES | PROPONENTE_POS_VENDA_STAGES
 STAGES_GANHO = {"1253324968", "1246571362"} | VENDIDO_POS_VENDA
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
 
+# CRIAP (Sprint 0 / S0.4 14/05 — Caminho 1 reuso pipeline Proponente)
+# Filtro CRIAP em qualquer rollup: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == CRIAP_PRODUTO_VALUE
+PROPONENTE_PIPELINE_ID = "839644419"
+CRIAP_PRODUTO_VALUE = "CRIAP"      # ASCII puro
+CRIAP_GANHO_STAGE_ID = "1246571362"   # = "Fechado" no Proponente (isClosed=true, prob=1.0)
+CRIAP_PERDIDO_STAGE_ID = "1246571364"  # = "Perdido" no Proponente
+# NOTA: stage "Ganho " (com 2 espacos, id 1253441207) tem isClosed=false. NAO usar como
+# fechado CRIAP. Usar CRIAP_GANHO_STAGE_ID (Fechado) hard-coded. Bug documentado em
+# CRIAP_CONFIGURACAO_COMPLETA.md apendice C.
+
 # Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
 # Picklists unificados: os valores em PASSTHROUGH_VALUES existem nos dois campos
 # (Deal.origem_lead e Company.origem) e podem ser propagados 1:1.
@@ -1163,6 +1186,109 @@ def patch_company_diag_from_aporte_ganho(companies_list, deals_list, deal_to_com
     return patches
 
 
+def compute_criap_rollups(companies_list, deals_list, deal_to_company):
+    """Calcula 4 props rollup CRIAP no Company-level (Sprint 0 / S0.4 14/05).
+
+    Caminho 1: deals CRIAP vivem no pipeline Proponente com produto='CRIAP'.
+    Filtro duplo: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == 'CRIAP'.
+
+    Agregacao dupla: Company aparece como
+      (a) patrocinador via deal_to_company (associacao primaria)
+      (b) parceiro indicador via deal.parceiro_indicador_criap (company_id em string)
+
+    4 props calculadas:
+      - criap_total_aporte_2026: soma valor_do_aporte de Ganhos 2026
+      - criap_count_negocios_ativos: count deals nao-fechados (stage != Ganho/Perdido)
+      - criap_count_negocios_ganhos: count deals em Ganho (qualquer data)
+      - criap_projetos_apoiados_2026: CSV projeto_beneficiario_criap distintos de Ganhos 2026
+
+    Idempotente: PATCH so se valor mudou. Batch 100/100.
+    Padrao: espelha patch_company_diag_from_aporte_ganho.
+    """
+    deal_props_idx = {d["id"]: d.get("properties", {}) or {} for d in deals_list}
+
+    # Filtra deals CRIAP (pipeline+produto)
+    criap_deal_ids = set()
+    for did, p in deal_props_idx.items():
+        if p.get("pipeline") == PROPONENTE_PIPELINE_ID and p.get("produto") == CRIAP_PRODUTO_VALUE:
+            criap_deal_ids.add(did)
+
+    # Index: company_id -> set(deal_ids) onde Company aparece como patrocinador OU parceiro
+    by_company = defaultdict(set)
+    for did in criap_deal_ids:
+        p = deal_props_idx[did]
+        cid_patroc = deal_to_company.get(did)
+        if cid_patroc:
+            by_company[str(cid_patroc)].add(did)
+        cid_parceiro = (p.get("parceiro_indicador_criap") or "").strip()
+        if cid_parceiro:
+            by_company[str(cid_parceiro)].add(did)
+
+    inputs = []
+    sem_deals_criap = 0
+
+    for c in companies_list:
+        cid = str(c.get("id") or "")
+        deal_ids = by_company.get(cid, set())
+        if not deal_ids:
+            sem_deals_criap += 1
+            continue
+
+        total_aporte_2026 = 0.0
+        count_ativos = 0
+        count_ganhos = 0
+        projetos_2026 = set()
+
+        for did in deal_ids:
+            p = deal_props_idx[did]
+            stage = p.get("dealstage") or ""
+            try:
+                valor = float(p.get("valor_do_aporte") or 0)
+            except (ValueError, TypeError):
+                valor = 0
+            close = p.get("closedate") or ""
+            projeto = (p.get("projeto_beneficiario_criap") or "").strip()
+
+            if stage == CRIAP_GANHO_STAGE_ID:
+                count_ganhos += 1
+                if close.startswith("2026"):
+                    total_aporte_2026 += valor
+                    if projeto:
+                        projetos_2026.add(projeto)
+            elif stage not in (CRIAP_GANHO_STAGE_ID, CRIAP_PERDIDO_STAGE_ID):
+                count_ativos += 1
+
+        # Comparar com valor atual da Company antes de PATCH (idempotencia)
+        atual = c.get("properties", {}) or {}
+        novo = {
+            "criap_total_aporte_2026": str(int(total_aporte_2026)),
+            "criap_count_negocios_ativos": str(count_ativos),
+            "criap_count_negocios_ganhos": str(count_ganhos),
+            "criap_projetos_apoiados_2026": ",".join(sorted(projetos_2026)),
+        }
+        delta = {k: v for k, v in novo.items() if str(atual.get(k) or "") != v}
+        if delta:
+            inputs.append({"id": cid, "properties": delta})
+
+    # Batch update 100/100
+    patches = 0
+    erros = 0
+    for i in range(0, len(inputs), 100):
+        chunk = inputs[i:i + 100]
+        r = req("POST", "/crm/v3/objects/companies/batch/update", json={"inputs": chunk})
+        if r.status_code in (200, 207):
+            patches += len(chunk)
+        else:
+            erros += len(chunk)
+            if erros <= 3:
+                print(f"  [erro] batch CRIAP rollup chunk {i}: {r.status_code} {r.text[:200]}")
+        time.sleep(0.1)
+
+    print(f"compute_criap_rollups: patches={patches} | "
+          f"deals_criap={len(criap_deal_ids)} | companies_sem_criap={sem_deals_criap} | erros={erros}")
+    return patches
+
+
 def sync_amount_para_aporte(deals_list):
     """Espelha valor_do_aporte → amount em cada Deal.
 
@@ -1217,6 +1343,56 @@ def sync_amount_para_aporte(deals_list):
 
     print(f"sync_amount_para_aporte: patches={patches} | ja_correto={pulou_correto} | "
           f"aporte_vazio={pulou_aporte_vazio} | erros={erros}")
+    return patches
+
+
+def sync_parceiro_cnpj_criap(deals_list, companies_list):
+    """Espelha CNPJ da Company referenciada por Deal.parceiro_indicador_criap (string company_id)
+    pra Deal.parceiro_indicador_cnpj_criap. Permite Looker fazer JOIN cross-Company sem
+    chamar API. Padrao espelha sync_amount_para_aporte.
+
+    Idempotente: so PATCH se valor mudou. So toca deals com produto='CRIAP' (escopo CRIAP).
+    """
+    cnpj_by_company = {
+        str(c["id"]): (c.get("properties", {}) or {}).get("cnpj", "") or ""
+        for c in companies_list
+    }
+    patches = 0
+    pulou_correto = 0
+    pulou_sem_parceiro = 0
+    pulou_nao_criap = 0
+    erros = 0
+
+    for d in deals_list:
+        did = d["id"]
+        p = d.get("properties", {}) or {}
+        if p.get("produto") != CRIAP_PRODUTO_VALUE:
+            pulou_nao_criap += 1
+            continue
+
+        parceiro_id = (p.get("parceiro_indicador_criap") or "").strip()
+        if not parceiro_id:
+            pulou_sem_parceiro += 1
+            continue
+
+        cnpj_correto = cnpj_by_company.get(parceiro_id, "")
+        cnpj_atual = (p.get("parceiro_indicador_cnpj_criap") or "").strip()
+        if cnpj_atual == cnpj_correto:
+            pulou_correto += 1
+            continue
+
+        r = req("PATCH", f"/crm/v3/objects/deals/{did}",
+                json={"properties": {"parceiro_indicador_cnpj_criap": cnpj_correto}})
+        if r.status_code == 200:
+            patches += 1
+        else:
+            erros += 1
+            if erros <= 3:
+                print(f"  [erro] PATCH parceiro_cnpj deal {did}: {r.status_code} {r.text[:150]}")
+        time.sleep(0.05)
+
+    print(f"sync_parceiro_cnpj_criap: patches={patches} | ja_correto={pulou_correto} | "
+          f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | erros={erros}")
     return patches
 
 
@@ -1676,6 +1852,22 @@ def main():
             sync_amount_para_aporte(deals)
         except Exception as e:
             print(f"[warn] sync_amount_para_aporte falhou: {e}")
+
+        # CRIAP rollups (Sprint 0 / S0.4 14/05) - Caminho 1.
+        # Try/except isola falha do pipeline existente Brada.
+        try:
+            compute_criap_rollups(
+                companies_list=all_companies or [],
+                deals_list=deals,
+                deal_to_company=deal_to_company,
+            )
+        except Exception as e:
+            print(f"[warn] compute_criap_rollups falhou: {e}")
+
+        try:
+            sync_parceiro_cnpj_criap(deals, all_companies or [])
+        except Exception as e:
+            print(f"[warn] sync_parceiro_cnpj_criap falhou: {e}")
 
     if all_companies:
         num_deals_by_cid = defaultdict(int)
