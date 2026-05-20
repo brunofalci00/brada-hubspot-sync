@@ -184,7 +184,7 @@ PRODUTO_PICKLIST_VALUE_TO_LABEL = {
     "Customização": "Customização",
     "Prestação": "Prestação",
     "Lei do bem": "Lei do bem",  # Ivan 04/05: produto novo
-    "CRIAP": "CRIAP",  # Sprint 0 / S0.3 14/05: discrimina deals CRIAP dentro do pipeline Proponente
+    "CRIAPE": "CRIAPE",  # F0.1 20/05: rename de "CRIAP" -> "CRIAPE" (value==label)
     # Legado lowercase (fallback)
     "match": "Match",
     "elaboracao": "Elaboração",
@@ -192,6 +192,9 @@ PRODUTO_PICKLIST_VALUE_TO_LABEL = {
     "customizacao": "Customização",
     "prestacao": "Prestação",
     "lei do bem": "Lei do bem",
+    # Legacy CRIAP: deals migrados em F0.1 20/05, mas mantido aqui por 1 ciclo
+    # de cron pra cobrir qualquer dado em voo. Remover pos-Sprint 1.
+    "CRIAP": "CRIAPE",
 }
 
 COMPANY_PROPERTIES = [
@@ -756,14 +759,16 @@ VENDIDO_POS_VENDA = POS_VENDA_STAGES | PROPONENTE_POS_VENDA_STAGES
 STAGES_GANHO = {"1253324968", "1246571362"} | VENDIDO_POS_VENDA
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
 
-# CRIAP (Sprint 0 / S0.4 14/05 — Caminho 1 reuso pipeline Proponente)
-# Filtro CRIAP em qualquer rollup: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == CRIAP_PRODUTO_VALUE
+# CRIAPE (Sprint 0 / S0.4 14/05 — Caminho 1 reuso pipeline Proponente)
+# F0.1 20/05: value padronizado de "CRIAP" para "CRIAPE" (label sempre foi "CRIAPE").
+# Constante mantem nome CRIAP_PRODUTO_VALUE pra evitar churn; o VALOR agora e "CRIAPE".
+# Filtro CRIAPE em qualquer rollup: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == CRIAP_PRODUTO_VALUE
 PROPONENTE_PIPELINE_ID = "839644419"
-CRIAP_PRODUTO_VALUE = "CRIAP"      # ASCII puro
+CRIAP_PRODUTO_VALUE = "CRIAPE"     # ASCII puro
 CRIAP_GANHO_STAGE_ID = "1246571362"   # = "Fechado" no Proponente (isClosed=true, prob=1.0)
 CRIAP_PERDIDO_STAGE_ID = "1246571364"  # = "Perdido" no Proponente
 # NOTA: stage "Ganho " (com 2 espacos, id 1253441207) tem isClosed=false. NAO usar como
-# fechado CRIAP. Usar CRIAP_GANHO_STAGE_ID (Fechado) hard-coded. Bug documentado em
+# fechado CRIAPE. Usar CRIAP_GANHO_STAGE_ID (Fechado) hard-coded. Bug documentado em
 # CRIAP_CONFIGURACAO_COMPLETA.md apendice C.
 
 # Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
