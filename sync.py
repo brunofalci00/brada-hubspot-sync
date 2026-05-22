@@ -765,11 +765,12 @@ PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value
 # Filtro CRIAPE em qualquer rollup: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == CRIAP_PRODUTO_VALUE
 PROPONENTE_PIPELINE_ID = "839644419"
 CRIAP_PRODUTO_VALUE = "CRIAPE"     # ASCII puro
-CRIAP_GANHO_STAGE_ID = "1246571362"   # = "Fechado" no Proponente (isClosed=true, prob=1.0)
+CRIAP_GANHO_STAGE_ID = "1246571362"   # = "Fechado" no Proponente (closed-won inicial, isClosed=true)
 CRIAP_PERDIDO_STAGE_ID = "1246571364"  # = "Perdido" no Proponente
-# NOTA: stage "Ganho " (com 2 espacos, id 1253441207) tem isClosed=false. NAO usar como
-# fechado CRIAPE. Usar CRIAP_GANHO_STAGE_ID (Fechado) hard-coded. Bug documentado em
-# CRIAP_CONFIGURACAO_COMPLETA.md apendice C.
+# Bruno 22/05: stages 1246571363 (Acompanhamento) e 1253441207 (Ganho/pos-venda) tambem sao
+# "ganho comercial" — projeto ja vendido em fase de entrega. Rollup CRIAPE conta como ganho.
+# Antes contava como ativo (bug — deal Eletromidia perderia status quando movesse pra pos-venda).
+CRIAP_GANHO_STAGES = {CRIAP_GANHO_STAGE_ID} | PROPONENTE_POS_VENDA_STAGES
 
 # Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
 # Picklists unificados: os valores em PASSTHROUGH_VALUES existem nos dois campos
@@ -1203,10 +1204,10 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
       (a) patrocinador via deal_to_company (associacao primaria)
       (b) parceiro indicador via deal.parceiro_indicador_criap (company_id em string)
 
-    5 props calculadas (Sprint 0.5 19/05: incluido perdidos pra comparativo de parceiros):
-      - criap_total_aporte_2026: soma valor_do_aporte de Ganhos 2026
-      - criap_count_negocios_ativos: count deals nao-fechados (stage != Ganho/Perdido)
-      - criap_count_negocios_ganhos: count deals em Ganho (qualquer data)
+    5 props calculadas:
+      - criap_total_aporte_2026: soma valor_do_aporte de Ganhos 2026 (Fechado + pos-venda)
+      - criap_count_negocios_ativos: count deals em negociacao (stage != Ganho/Perdido/pos-venda)
+      - criap_count_negocios_ganhos: count deals em Ganho comercial (Fechado, Acompanhamento, Ganho/pos-venda)
       - criap_count_negocios_perdidos: count deals em Perdido (qualquer data)
       - criap_projetos_apoiados_2026: CSV projeto_beneficiario_criap distintos de Ganhos 2026
 
@@ -1258,7 +1259,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
             close = p.get("closedate") or ""
             projeto = (p.get("projeto_beneficiario_criap") or "").strip()
 
-            if stage == CRIAP_GANHO_STAGE_ID:
+            if stage in CRIAP_GANHO_STAGES:
                 count_ganhos += 1
                 if close.startswith("2026"):
                     total_aporte_2026 += valor
