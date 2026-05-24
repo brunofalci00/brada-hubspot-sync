@@ -28,10 +28,12 @@ PORTAL_ID = "50771078"
 HUBSPOT_TOKEN = os.environ.get("HUBSPOT_TOKEN", "")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-SERVICE_ACCOUNT_FILE = os.environ.get(
-    "GOOGLE_SERVICE_ACCOUNT_FILE",
-    os.path.join(os.path.dirname(__file__), "..", "service-account-key.json"),
-)
+SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+if not SERVICE_ACCOUNT_FILE:
+    # Fallback hierárquico: env (CI/secret) > path prod (CI sem env) > path local (Bruno dev)
+    _prod_path = os.path.join(os.path.dirname(__file__), "..", "service-account-key.json")
+    _local_path = r"C:\Users\bruno\.brada-secrets\sheets-sa.json"
+    SERVICE_ACCOUNT_FILE = _prod_path if os.path.exists(_prod_path) else _local_path
 
 HEADERS = {
     "Authorization": f"Bearer {HUBSPOT_TOKEN}",
@@ -330,7 +332,20 @@ def fetch_all_deals():
 
 
 def fetch_associated_companies(deal_ids):
-    """Retorna {deal_id: company_id}."""
+    """Retorna {deal_id: primary_company_id}.
+
+    Escolhe Company com typeId=5 (Primary) explicitamente. Sem isso,
+    deals com multiplas companies (primary + secondary typeId=341)
+    retornariam a errada quando batch/read v4 nao garante ordem por primary.
+
+    Bug corrigido 24/05 (Bruno): antes usava tos[0] cego, causando
+    deal_to_company errado em deals com parceiro indicador CRIAPE.
+    Sintoma: cron sync_parceiro_associations_criap registrava
+    `[BUG] tentou remover primary` em 14 deals.
+
+    Fallback: tos[0] se nenhuma association marcada como primary
+    (improvavel — todo deal HubSpot tem pelo menos 1 primary).
+    """
     deal_to_company = {}
     for i in range(0, len(deal_ids), 100):
         batch = deal_ids[i:i + 100]
@@ -345,8 +360,17 @@ def fetch_associated_companies(deal_ids):
         for result in r.json().get("results", []):
             deal_id = result.get("from", {}).get("id")
             tos = result.get("to", [])
-            if deal_id and tos:
-                deal_to_company[deal_id] = tos[0].get("toObjectId")
+            if not (deal_id and tos):
+                continue
+            # Procurar primary explicitamente (typeId=5 HUBSPOT_DEFINED)
+            primary_id = None
+            for to in tos:
+                types = to.get("associationTypes", []) or []
+                if any(t.get("typeId") == 5 for t in types):
+                    primary_id = to.get("toObjectId")
+                    break
+            # Fallback: tos[0] se nenhuma primary detectada (defensivo)
+            deal_to_company[deal_id] = primary_id or tos[0].get("toObjectId")
     print(f"Associacoes deal->company: {len(deal_to_company)}")
     return deal_to_company
 
