@@ -1343,9 +1343,10 @@ def sync_amount_para_aporte(deals_list):
     line items hoje, nao e problema. Detectar virtualmente custa 1
     request extra por deal — nao vale a pena agora.
     """
-    patches = 0
+    patches_aporte_para_amount = 0
+    patches_amount_para_aporte = 0  # NOVO (26/05): reverse fill quando valor_do_aporte vazio
     pulou_correto = 0
-    pulou_aporte_vazio = 0
+    pulou_ambos_vazios = 0
     erros = 0
 
     for d in deals_list:
@@ -1360,27 +1361,51 @@ def sync_amount_para_aporte(deals_list):
         except (ValueError, TypeError):
             amount_atual = 0
 
-        if aporte <= 0:
-            pulou_aporte_vazio += 1
+        # Caso 5: ambos vazios — nada a fazer
+        if aporte <= 0 and amount_atual <= 0:
+            pulou_ambos_vazios += 1
             continue
 
+        # Caso 4 (NOVO 26/05): valor_do_aporte vazio mas amount populated.
+        # Bug Sprint 1: 128 deals migrados tinham só amount preenchido. Sem
+        # popular valor_do_aporte, compute_criap_rollups soma 0 (linha ~1255
+        # le valor_do_aporte, nao amount). Bidirecional resolve forever:
+        # Jaqueline pode criar deal manual com so amount no UI sem quebrar
+        # rollup.
+        if aporte <= 0 and amount_atual > 0:
+            r = req("PATCH", f"/crm/v3/objects/deals/{did}",
+                    json={"properties": {"valor_do_aporte": str(amount_atual)}})
+            if r.status_code == 200:
+                patches_amount_para_aporte += 1
+            else:
+                erros += 1
+                if erros <= 3:
+                    print(f"  [erro] PATCH valor_do_aporte deal {did}: {r.status_code} {r.text[:150]}")
+            time.sleep(0.05)
+            continue
+
+        # Caso 1: ja sincronizado
         if abs(amount_atual - aporte) < 0.01:
             pulou_correto += 1
             continue
 
+        # Caso 2-3: valor_do_aporte populated, amount diferente ou vazio.
+        # valor_do_aporte e source of truth — espelha pra amount.
         r = req("PATCH", f"/crm/v3/objects/deals/{did}",
                 json={"properties": {"amount": str(aporte)}})
         if r.status_code == 200:
-            patches += 1
+            patches_aporte_para_amount += 1
         else:
             erros += 1
             if erros <= 3:
                 print(f"  [erro] PATCH amount deal {did}: {r.status_code} {r.text[:150]}")
         time.sleep(0.05)
 
-    print(f"sync_amount_para_aporte: patches={patches} | ja_correto={pulou_correto} | "
-          f"aporte_vazio={pulou_aporte_vazio} | erros={erros}")
-    return patches
+    total_patches = patches_aporte_para_amount + patches_amount_para_aporte
+    print(f"sync_amount_para_aporte: patches={total_patches} (aporte->amount={patches_aporte_para_amount}, "
+          f"amount->aporte={patches_amount_para_aporte}) | ja_correto={pulou_correto} | "
+          f"ambos_vazios={pulou_ambos_vazios} | erros={erros}")
+    return total_patches
 
 
 def sync_parceiro_cnpj_criap(deals_list, companies_list):
