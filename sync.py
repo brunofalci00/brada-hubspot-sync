@@ -227,10 +227,12 @@ COMPANY_PROPERTIES = [
     # CRIAP (Sprint 0 / S0.4 — Caminho 1)
     "papel_criap",  # multi-select: patrocinador, parceiro_indicador
     "criap_total_aporte_2026",  # AUTO sync.py via compute_criap_rollups
+    "criap_total_aporte_2025",  # AUTO (Sprint 1.5 27/05 — mitigação preventiva ajuste E closedate retroativo)
     "criap_count_negocios_ativos",  # AUTO
     "criap_count_negocios_ganhos",  # AUTO
     "criap_count_negocios_perdidos",  # AUTO (Sprint 0.5 19/05 — comparativo performance parceiro)
     "criap_projetos_apoiados_2026",  # AUTO (CSV)
+    "criap_nomes_clientes_indicados",  # AUTO (Sprint 1.5 27/05 — pedido Ivan 26/05: ver clientes que a parceira indicou)
 ]
 
 WORKSHEET_NAME = "raw_deals"
@@ -1219,26 +1221,36 @@ def patch_company_diag_from_aporte_ganho(companies_list, deals_list, deal_to_com
 
 
 def compute_criap_rollups(companies_list, deals_list, deal_to_company):
-    """Calcula 4 props rollup CRIAP no Company-level (Sprint 0 / S0.4 14/05).
+    """Calcula 7 props rollup CRIAP no Company-level (Sprint 0 14/05 + Sprint 1.5 27/05).
 
     Caminho 1: deals CRIAP vivem no pipeline Proponente com produto='CRIAP'.
     Filtro duplo: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == 'CRIAP'.
 
     Agregacao dupla: Company aparece como
-      (a) patrocinador via deal_to_company (associacao primaria)
+      (a) patrocinador via deal_to_company (associacao primaria typeId=5)
       (b) parceiro indicador via deal.parceiro_indicador_criap (company_id em string)
 
-    5 props calculadas:
+    7 props calculadas:
       - criap_total_aporte_2026: soma valor_do_aporte de Ganhos 2026 (Fechado + pos-venda)
+      - criap_total_aporte_2025: soma valor_do_aporte de Ganhos 2025 (Sprint 1.5 — mitiga ajuste E)
       - criap_count_negocios_ativos: count deals em negociacao (stage != Ganho/Perdido/pos-venda)
       - criap_count_negocios_ganhos: count deals em Ganho comercial (Fechado, Acompanhamento, Ganho/pos-venda)
       - criap_count_negocios_perdidos: count deals em Perdido (qualquer data)
       - criap_projetos_apoiados_2026: CSV projeto_beneficiario_criap distintos de Ganhos 2026
+      - criap_nomes_clientes_indicados: lista (multi-line) de Company.name dos clientes
+        patrocinadores trazidos por esta Company, quando ela aparece como parceira indicadora
+        (Sprint 1.5 27/05 — pedido Ivan 26/05). Vazio quando Company nao e parceira.
 
     Idempotente: PATCH so se valor mudou. Batch 100/100.
     Padrao: espelha patch_company_diag_from_aporte_ganho.
     """
     deal_props_idx = {d["id"]: d.get("properties", {}) or {} for d in deals_list}
+
+    # Index nome de Company por id (Sprint 1.5 — pra rollup criap_nomes_clientes_indicados)
+    company_name_by_id = {
+        str(c.get("id") or ""): (c.get("properties", {}) or {}).get("name", "") or ""
+        for c in companies_list
+    }
 
     # Filtra deals CRIAP (pipeline+produto)
     criap_deal_ids = set()
@@ -1248,6 +1260,9 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
 
     # Index: company_id -> set(deal_ids) onde Company aparece como patrocinador OU parceiro
     by_company = defaultdict(set)
+    # Sprint 1.5: index separado pra rollup criap_nomes_clientes_indicados
+    # (so quando Company atual eh parceira do deal, listar clientes patrocinadores)
+    by_company_parceiro = defaultdict(set)
     for did in criap_deal_ids:
         p = deal_props_idx[did]
         cid_patroc = deal_to_company.get(did)
@@ -1256,6 +1271,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
         cid_parceiro = (p.get("parceiro_indicador_criap") or "").strip()
         if cid_parceiro:
             by_company[str(cid_parceiro)].add(did)
+            by_company_parceiro[str(cid_parceiro)].add(did)
 
     inputs = []
     sem_deals_criap = 0
@@ -1268,6 +1284,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
             continue
 
         total_aporte_2026 = 0.0
+        total_aporte_2025 = 0.0
         count_ativos = 0
         count_ganhos = 0
         count_perdidos = 0
@@ -1289,19 +1306,35 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
                     total_aporte_2026 += valor
                     if projeto:
                         projetos_2026.add(projeto)
+                elif close.startswith("2025"):
+                    total_aporte_2025 += valor
             elif stage == CRIAP_PERDIDO_STAGE_ID:
                 count_perdidos += 1
             else:
                 count_ativos += 1
 
+        # Sprint 1.5 — criap_nomes_clientes_indicados: so popula quando esta Company atua
+        # como parceira indicadora em algum deal. Listar Company.name dos clientes
+        # (patrocinadores primary) de cada deal indicado, sem duplicar.
+        nomes_clientes_indicados = set()
+        deal_ids_como_parceira = by_company_parceiro.get(cid, set())
+        for did_p in deal_ids_como_parceira:
+            cid_patroc_do_deal = deal_to_company.get(did_p)
+            if cid_patroc_do_deal:
+                name_cliente = company_name_by_id.get(str(cid_patroc_do_deal), "")
+                if name_cliente:
+                    nomes_clientes_indicados.add(name_cliente)
+
         # Comparar com valor atual da Company antes de PATCH (idempotencia)
         atual = c.get("properties", {}) or {}
         novo = {
             "criap_total_aporte_2026": str(int(total_aporte_2026)),
+            "criap_total_aporte_2025": str(int(total_aporte_2025)),
             "criap_count_negocios_ativos": str(count_ativos),
             "criap_count_negocios_ganhos": str(count_ganhos),
             "criap_count_negocios_perdidos": str(count_perdidos),
             "criap_projetos_apoiados_2026": ",".join(sorted(projetos_2026)),
+            "criap_nomes_clientes_indicados": "\n".join(sorted(nomes_clientes_indicados)),
         }
         delta = {k: v for k, v in novo.items() if str(atual.get(k) or "") != v}
         if delta:
@@ -1567,14 +1600,25 @@ def sync_parceiro_associations_criap(deals_list, deal_to_company, dry_run=False)
                 print(f"  [erro] GET assocs deal {did}: {r.status_code} {r.text[:150]}")
             continue
         results = r.json().get("results", []) or []
+        # Sprint 1.5 fix typeId=341 duplicado (27/05): blacklist combina primary do snapshot
+        # (deal_to_company) + primary do runtime GET. Antes do fix, 14 deals (11 Baloart +
+        # 3 Felipe PV) tinham Company com AMBOS typeId=5 + typeId=341 — runtime mostrava
+        # so 341 (sem 5) por race condition/stale cache, entrava em current_341 e disparava
+        # "[BUG] tentou remover primary". Fix: se Company eh primary em qualquer source,
+        # nunca entra em current_341 — invariante semantica preservada.
+        primary_cids_blacklist = {primary_cid} if primary_cid else set()
+        for assoc in results:
+            cid = str(assoc.get("toObjectId") or "")
+            types = assoc.get("associationTypes", []) or []
+            if any(t.get("typeId") == HUBSPOT_DEAL_TO_COMPANY_PRIMARY_TYPE_ID for t in types):
+                primary_cids_blacklist.add(cid)
         current_341 = set()
         for assoc in results:
             cid = str(assoc.get("toObjectId") or "")
             types = assoc.get("associationTypes", []) or []
             has_341 = any(t.get("typeId") == HUBSPOT_DEAL_TO_COMPANY_TYPE_ID for t in types)
-            is_primary = any(t.get("typeId") == HUBSPOT_DEAL_TO_COMPANY_PRIMARY_TYPE_ID for t in types)
-            # Secondary = typeId=341 presente E NAO e a primary do deal
-            if has_341 and not is_primary:
+            # Secondary = typeId=341 presente E NAO eh primary em NENHUM source
+            if has_341 and cid not in primary_cids_blacklist:
                 current_341.add(cid)
 
         to_add = expected_341 - current_341
