@@ -233,6 +233,7 @@ COMPANY_PROPERTIES = [
     "criap_count_negocios_perdidos",  # AUTO (Sprint 0.5 19/05 — comparativo performance parceiro)
     "criap_projetos_apoiados_2026",  # AUTO (CSV)
     "criap_nomes_clientes_indicados",  # AUTO (Sprint 1.5 27/05 — pedido Ivan 26/05: ver clientes que a parceira indicou)
+    "criap_aporte_por_cliente_2026",  # AUTO (Sprint 1.5 add-on 28/05 — agregado valor por cliente)
 ]
 
 WORKSHEET_NAME = "raw_deals"
@@ -1221,7 +1222,7 @@ def patch_company_diag_from_aporte_ganho(companies_list, deals_list, deal_to_com
 
 
 def compute_criap_rollups(companies_list, deals_list, deal_to_company):
-    """Calcula 7 props rollup CRIAP no Company-level (Sprint 0 14/05 + Sprint 1.5 27/05).
+    """Calcula 8 props rollup CRIAP no Company-level (Sprint 0 14/05 + Sprint 1.5 27-28/05).
 
     Caminho 1: deals CRIAP vivem no pipeline Proponente com produto='CRIAP'.
     Filtro duplo: deal.pipeline == PROPONENTE_PIPELINE_ID AND deal.produto == 'CRIAP'.
@@ -1230,7 +1231,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
       (a) patrocinador via deal_to_company (associacao primaria typeId=5)
       (b) parceiro indicador via deal.parceiro_indicador_criap (company_id em string)
 
-    7 props calculadas:
+    8 props calculadas:
       - criap_total_aporte_2026: soma valor_do_aporte de Ganhos 2026 (Fechado + pos-venda)
       - criap_total_aporte_2025: soma valor_do_aporte de Ganhos 2025 (Sprint 1.5 — mitiga ajuste E)
       - criap_count_negocios_ativos: count deals em negociacao (stage != Ganho/Perdido/pos-venda)
@@ -1240,6 +1241,10 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
       - criap_nomes_clientes_indicados: lista (multi-line) de Company.name dos clientes
         patrocinadores trazidos por esta Company, quando ela aparece como parceira indicadora
         (Sprint 1.5 27/05 — pedido Ivan 26/05). Vazio quando Company nao e parceira.
+      - criap_aporte_por_cliente_2026: lista (multi-line) "Cliente: R$ N" agregada por
+        cliente patrocinador, somando valor_do_aporte de Ganhos 2026 (valor > 0),
+        ordenada decrescente por valor, formato BR. Vazio quando Company nao e parceira.
+        (Sprint 1.5 add-on 28/05 — completa granularidade pedida por Ivan)
 
     Idempotente: PATCH so se valor mudou. Batch 100/100.
     Padrao: espelha patch_company_diag_from_aporte_ganho.
@@ -1325,6 +1330,33 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
                 if name_cliente:
                     nomes_clientes_indicados.add(name_cliente)
 
+        # Sprint 1.5 add-on 28/05 — criap_aporte_por_cliente_2026: agrega valor_do_aporte
+        # de Ganhos 2026 por cliente patrocinador (somando deals multi-projeto do mesmo cliente),
+        # formato BR, ordem decrescente. Filtra valor > 0 (evita "Cliente: R$ 0" no card).
+        # Mesmo padrao de iteracao do nomes_clientes_indicados — so popula quando Company eh parceira.
+        aporte_por_cliente = defaultdict(float)
+        for did_p in deal_ids_como_parceira:
+            p_did = deal_props_idx[did_p]
+            stage_did = p_did.get("dealstage") or ""
+            close_did = p_did.get("closedate") or ""
+            try:
+                valor_did = float(p_did.get("valor_do_aporte") or 0)
+            except (ValueError, TypeError):
+                valor_did = 0
+            cid_patroc_do_deal = deal_to_company.get(did_p)
+            if (stage_did in CRIAP_GANHO_STAGES
+                and close_did.startswith("2026")
+                and cid_patroc_do_deal
+                and valor_did > 0):
+                name_cliente = company_name_by_id.get(str(cid_patroc_do_deal), "")
+                if name_cliente:
+                    aporte_por_cliente[name_cliente] += valor_did
+        linhas_apc = [
+            f"{nome}: R$ {int(valor):,}".replace(",", ".")
+            for nome, valor in sorted(aporte_por_cliente.items(), key=lambda kv: -kv[1])
+        ]
+        aporte_por_cliente_str = "\n".join(linhas_apc)
+
         # Comparar com valor atual da Company antes de PATCH (idempotencia)
         atual = c.get("properties", {}) or {}
         novo = {
@@ -1335,6 +1367,7 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
             "criap_count_negocios_perdidos": str(count_perdidos),
             "criap_projetos_apoiados_2026": ",".join(sorted(projetos_2026)),
             "criap_nomes_clientes_indicados": "\n".join(sorted(nomes_clientes_indicados)),
+            "criap_aporte_por_cliente_2026": aporte_por_cliente_str,
         }
         delta = {k: v for k, v in novo.items() if str(atual.get(k) or "") != v}
         if delta:
