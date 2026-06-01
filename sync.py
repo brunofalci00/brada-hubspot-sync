@@ -58,6 +58,7 @@ DEAL_PROPERTIES = [
     "motivo_de_perda",
     "nome_do_proponente",
     "nome_do_projeto",
+    "numero_do_projeto",  # Sprint 1 consolidado: chave de projeto (linkagem cross-pipeline)
     "createdate",
     "closedate",
     "hs_lastmodifieddate",
@@ -670,6 +671,8 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         # Contexto
         "nome_do_proponente": p.get("nome_do_proponente", ""),
         "nome_do_projeto": p.get("nome_do_projeto", ""),
+        "numero_do_projeto": p.get("numero_do_projeto", ""),  # Sprint 1: chave de projeto
+        "projeto_beneficiario_criap": p.get("projeto_beneficiario_criap", ""),  # Sprint 1: projeto_key CRIAPE
         # Datas
         "createdate": p.get("createdate", ""),
         "closedate": p.get("closedate", ""),
@@ -798,6 +801,22 @@ CRIAP_PERDIDO_STAGE_ID = "1246571364"  # = "Perdido" no Proponente
 # "ganho comercial" — projeto ja vendido em fase de entrega. Rollup CRIAPE conta como ganho.
 # Antes contava como ativo (bug — deal Eletromidia perderia status quando movesse pra pos-venda).
 CRIAP_GANHO_STAGES = {CRIAP_GANHO_STAGE_ID} | PROPONENTE_POS_VENDA_STAGES
+
+# ===== Comissionamento (Sprint 1 — consolidado + reporting Luciana) =====
+# AVISO: constantes INFERIDAS da planilha do Ivan (poucas linhas). PENDENTE validação
+# Ivan/Luciana antes de tratar como verdade — folha de pagamento depende disso.
+# Fator 0.88 = (1 - 12%); o "12%" não tem rótulo na planilha (imposto? Simples?).
+PCT_INTERNO = 0.15          # Comissão BRADA em venda interna
+PCT_EXTERNO = 0.10          # Comissão BRADA em venda externa
+FATOR_LIQUIDO = 0.88        # Líquido Brada = Comissão BRADA × (1 - 12%)
+PCT_IVAN = 0.08             # Ivan = Líquido × 8%
+PCT_JAQUE = 0.04            # Jaque = Líquido × 4%
+PCT_EXTERNO_PESSOA = 0.03   # Externo = Líquido × 3%
+MATCH_FIXO = {"ivan": 1000, "jaque_ou_danielle": 700, "rafaela": 200}  # MATCH fixo (participação manual)
+# Estágios de conversão (Bruno 01/06): Incentivador conta conversão a partir do
+# estágio "match"; Proponente a partir de "ganho" (= CRIAP_GANHO_STAGE_ID).
+MATCH_STAGE_INCENTIVADOR_ID = "1246602643"   # "[Match] - Projetos" (não-closed)
+GANHO_INCENTIVADOR_STAGE_ID = "1253324968"   # "Ganho - Incentivador" (closed-won)
 
 # Auto-herança origem_lead <- Company.origem (decisao Bruno 23/04 tarde).
 # Picklists unificados: os valores em PASSTHROUGH_VALUES existem nos dois campos
@@ -1390,6 +1409,163 @@ def compute_criap_rollups(companies_list, deals_list, deal_to_company):
     print(f"compute_criap_rollups: patches={patches} | "
           f"deals_criap={len(criap_deal_ids)} | companies_sem_criap={sem_deals_criap} | erros={erros}")
     return patches
+
+
+def _norm_key(s):
+    """Normaliza string pra chave de join cross-pipeline (lower, sem acento/espaço extra)."""
+    if not s:
+        return ""
+    s = str(s).strip().lower()
+    for a, b in (("á", "a"), ("à", "a"), ("ã", "a"), ("â", "a"), ("é", "e"), ("ê", "e"),
+                 ("í", "i"), ("ó", "o"), ("ô", "o"), ("õ", "o"), ("ú", "u"), ("ç", "c")):
+        s = s.replace(a, b)
+    return " ".join(s.split())
+
+
+def build_consolidado_layer(enriched, stages=None):
+    """Backbone único (grão = 1 deal) do qual derivam as 3 views: reporting Luciana,
+    visão 4 colunas Vitor, dashboard CRIAPE (Sprint 1).
+
+    Reusa o dict `enriched` (produto, valor_do_aporte, valor_vendido, closedate,
+    data_do_aporte, nome/numero_do_projeto, projeto_beneficiario_criap, company_name,
+    e_ganho, executivo_nome, stage_ordem) e DERIVA:
+      - interno_externo (do split Match interno/externo — Bruno)
+      - comissão Vendas% (15/10% × 0,88 × 8/4/3) — PENDENTE validação Ivan/Luciana
+      - projeto_key + tem_overlap_projeto (anti double-count cross-pipeline)
+      - flags convertido/won (conversão Incentivador a partir do estágio "match";
+        Proponente a partir de "ganho" — Bruno 01/06)
+      - *_status (closedate/comissão/owner) pra views degradarem com elegância e
+        auto-completarem quando os inputs (Ivan/Leila) chegarem.
+
+    Função PURA (não escreve no CRM): in=enriched, out=list de dicts. O main()/teste
+    escreve a aba `consolidado` via write_to_sheets.
+    """
+    match_ordem = None
+    if stages:
+        match_ordem = (stages.get(MATCH_STAGE_INCENTIVADOR_ID, {}) or {}).get("ordem")
+
+    rows = []
+    for e in enriched:
+        produto = (e.get("produto") or "").strip()
+        pipeline = e.get("pipeline_nome") or ""
+        valor = float(e.get("valor_do_aporte") or 0)
+        valor_vendido = float(e.get("valor_vendido") or 0)
+        e_ganho = bool(e.get("e_ganho"))
+        closedate = e.get("closedate") or ""
+        nome_projeto = e.get("nome_do_projeto") or ""
+        numero_projeto = e.get("numero_do_projeto") or ""
+        projeto_benef = e.get("projeto_beneficiario_criap") or ""
+
+        # interno/externo (split enum Match interno/externo). CRIAPE/Elaboração ficam
+        # vazios até decisão Ivan (item #1 da reunião).
+        if produto == "Match interno":
+            interno_externo = "Interno"
+        elif produto == "Match externo":
+            interno_externo = "Externo"
+        else:
+            interno_externo = ""
+
+        # Comissão Vendas% (só quando classificado + valor presente). PENDENTE Ivan/Luciana.
+        comissao_brada = liquido = c_ivan = c_jaque = c_externo = 0.0
+        if interno_externo == "Interno":
+            comissao_brada = valor * PCT_INTERNO
+        elif interno_externo == "Externo":
+            comissao_brada = valor * PCT_EXTERNO
+        if comissao_brada:
+            liquido = comissao_brada * FATOR_LIQUIDO
+            c_ivan = liquido * PCT_IVAN
+            c_jaque = liquido * PCT_JAQUE
+            c_externo = liquido * PCT_EXTERNO_PESSOA
+
+        if interno_externo and valor > 0:
+            comissao_status = "calculada"
+        elif interno_externo and valor <= 0:
+            comissao_status = "pendente_valor"
+        elif produto in ("Match", "Match interno", "Match externo"):
+            comissao_status = "pendente_classificacao"
+        else:
+            comissao_status = "pendente_modelo"  # CRIAPE/Elaboração/outros (modelo pendente Ivan)
+
+        if produto in ("Match", "Match interno", "Match externo"):
+            fluxo_comissao = "Vendas%"
+        elif produto == "CRIAPE":
+            fluxo_comissao = "CRIAPE (pendente Ivan)"
+        elif produto == "Elaboração":
+            fluxo_comissao = "Elaboração (pendente Ivan)"
+        else:
+            fluxo_comissao = produto
+
+        # projeto_key: chave de dedup cross-pipeline. CRIAPE usa o enum
+        # projeto_beneficiario_criap (93% fill); os demais usam nome/numero_do_projeto.
+        if produto == "CRIAPE":
+            projeto_key = _norm_key(projeto_benef)
+        else:
+            projeto_key = _norm_key(nome_projeto) or _norm_key(numero_projeto)
+
+        # closedate fake/null só faz sentido pro CRIAPE (Bruno 01/06: Match/Elab corretos).
+        if not closedate:
+            closedate_status = "null"
+        elif produto == "CRIAPE" and closedate.startswith("2026-05-22"):
+            closedate_status = "fake"
+        else:
+            closedate_status = "real"
+
+        # Conversão (Bruno 01/06). won_ganho reusa e_ganho (won + pós-venda nos 2 pipelines).
+        won_ganho = e_ganho
+        convertido = e_ganho
+        if pipeline == "Incentivador" and match_ordem is not None:
+            try:
+                convertido = (float(e.get("stage_ordem") or 999) >= float(match_ordem)) or e_ganho
+            except (ValueError, TypeError):
+                convertido = e_ganho
+
+        owner_nome = e.get("executivo_nome") or "(sem owner)"
+        owner_status = "atribuido" if owner_nome not in ("(sem owner)", "") else "null"
+
+        rows.append({
+            "deal_id": e.get("deal_id", ""),
+            "cliente": e.get("company_name", "") or e.get("deal_name", ""),
+            "cnpj": e.get("company_cnpj", ""),
+            "pipeline": pipeline,
+            "produto": produto,
+            "interno_externo": interno_externo,
+            "fluxo_comissao": fluxo_comissao,
+            "projeto_key": projeto_key,
+            "numero_projeto": numero_projeto,
+            "nome_projeto": nome_projeto,
+            "proponente": e.get("nome_do_proponente", ""),
+            "stage": e.get("stage_nome", ""),
+            "convertido": 1 if convertido else 0,
+            "won_ganho": 1 if won_ganho else 0,
+            "tem_overlap_projeto": 0,  # 2a passada
+            "closedate": closedate,
+            "closedate_status": closedate_status,
+            "data_aporte": e.get("data_do_aporte", ""),
+            "valor_bruto": valor,
+            "valor_vendido": valor_vendido,
+            "comissao_brada": round(comissao_brada, 2),
+            "liquido_brada": round(liquido, 2),
+            "comissao_ivan": round(c_ivan, 2),
+            "comissao_jaque": round(c_jaque, 2),
+            "comissao_externo": round(c_externo, 2),
+            "comissao_status": comissao_status,
+            "owner": owner_nome,
+            "owner_status": owner_status,
+            "origem_lead": e.get("origem_lead", ""),
+            "lei_principal": e.get("lei_principal", ""),
+            "ano": e.get("ano_fechamento", ""),
+        })
+
+    # 2a passada: flag de overlap cross-pipeline (mesma projeto_key em >1 pipeline).
+    pipelines_por_projeto = defaultdict(set)
+    for r in rows:
+        if r["projeto_key"]:
+            pipelines_por_projeto[r["projeto_key"]].add(r["pipeline"])
+    for r in rows:
+        if r["projeto_key"] and len(pipelines_por_projeto[r["projeto_key"]]) > 1:
+            r["tem_overlap_projeto"] = 1
+
+    return rows
 
 
 def sync_amount_para_aporte(deals_list):
@@ -2117,6 +2293,24 @@ def main():
     rows = [[r[k] for k in header] for r in enriched]
 
     write_to_sheets(rows, header)
+
+    # Aba consolidado (Sprint 1): backbone único das 3 views (reporting Luciana,
+    # visão 4 colunas Vitor, dashboard CRIAPE). Deriva interno/externo + comissão
+    # Vendas% + projeto_key + flags de conversão/overlap. NÃO toca o CRM.
+    # Isolado por try/except pra não derrubar o pipeline existente.
+    try:
+        cons = build_consolidado_layer(enriched, stages=stages)
+        if cons:
+            cons_header = list(cons[0].keys())
+            cons_rows = [[r[k] for k in cons_header] for r in cons]
+            write_to_sheets(
+                cons_rows, cons_header,
+                worksheet_name="consolidado",
+                meta_label="ultima_sync_consolidado",
+                meta_range="A3:C3",
+            )
+    except Exception as e:
+        print(f"[warn] build_consolidado_layer falhou: {e}")
 
     # Aba raw_companies: TODAS as Companies (incluindo orfas sem Deal)
     # Desbloqueia scorecards Ato 3 Cadastro do dashboard Qualidade (23/04 tarde).
