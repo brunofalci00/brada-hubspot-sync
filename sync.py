@@ -611,6 +611,12 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
                       if (valor_aporte > 0 and ano_close and company_id) else "")
     dup_sig_h3 = (f"{company_id}|{lei_eff}"
                   if (e_ativo and company_id and lei_eff) else "")
+    # Etapa 1 (02/06): assinatura CRIAPE por projeto via empresa_canonica (CNPJ/nome normalizado).
+    # Pega dups CRIAPE que h2/h2flex perdem quando closedate e nulo (ex.: SOTREQ). Review-only.
+    emp_canon = _normalize_cnpj(comp.get("cnpj", "")) or _norm_key(comp.get("name", "") or "")
+    proj_criap = (p.get("projeto_beneficiario_criap") or "").strip()
+    dup_sig_criape = (f"{emp_canon}|{_norm_key(proj_criap)}|{int(valor_aporte)}"
+                      if (produto == CRIAP_PRODUTO_VALUE and emp_canon and proj_criap and valor_aporte > 0) else "")
 
     dn_low = (p.get("dealname") or "").lower()
     dealname_clone_flag = 1 if any(
@@ -715,6 +721,9 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "dup_keep_suggestion": "",
         # Link
         "link_hubspot": f"https://app.hubspot.com/contacts/{PORTAL_ID}/deal/{deal_id}",
+        # Etapa 1 (02/06): assinatura/contador CRIAPE no FIM do dict (colunas no fim do raw_deals).
+        "dup_signature_criape": dup_sig_criape,
+        "dup_count_criape": 0,
     }
 
 
@@ -772,6 +781,8 @@ def enrich_company(company, num_deals_by_cid, flags_by_cid=None):
         "tem_deal_ativo": 1 if flags.get("ativo", 0) > 0 else 0,
         "tem_deal_ganho": 1 if flags.get("ganho", 0) > 0 else 0,
         "tem_deal_perdido": 1 if flags.get("perdido", 0) > 0 else 0,
+        # Etapa 1 (02/06): mesma formula do consolidado -> join consistente entre as duas abas.
+        "empresa_canonica": _normalize_cnpj(cnpj_raw) or _norm_key(p.get("name", "") or ""),
     }
 
 
@@ -1455,6 +1466,8 @@ def build_consolidado_layer(enriched, stages=None):
         nome_projeto = e.get("nome_do_projeto") or ""
         numero_projeto = e.get("numero_do_projeto") or ""
         projeto_benef = e.get("projeto_beneficiario_criap") or ""
+        # Etapa 1 (02/06): chave canonica de empresa pra analise/agrupamento (nao mescla cadastro).
+        empresa_canonica = _normalize_cnpj(e.get("company_cnpj") or "") or _norm_key(e.get("company_name") or "")
 
         # interno/externo (split enum Match interno/externo). CRIAPE/Elaboração ficam
         # vazios até decisão Ivan (item #1 da reunião).
@@ -1554,6 +1567,7 @@ def build_consolidado_layer(enriched, stages=None):
             "origem_lead": e.get("origem_lead", ""),
             "lei_principal": e.get("lei_principal", ""),
             "ano": e.get("ano_fechamento", ""),
+            "empresa_canonica": empresa_canonica,  # Etapa 1: coluna no FIM (protege binding Looker)
         })
 
     # 2a passada: flag de overlap cross-pipeline (mesma projeto_key em >1 pipeline).
@@ -2221,21 +2235,24 @@ def main():
     sig_h2_counts = Counter(d["dup_signature_h2"] for d in enriched if d["dup_signature_h2"])
     sig_h2flex_counts = Counter(d["dup_signature_h2flex"] for d in enriched if d["dup_signature_h2flex"])
     sig_h3_counts = Counter(d["dup_signature_h3"] for d in enriched if d["dup_signature_h3"])
+    sig_criape_counts = Counter(d["dup_signature_criape"] for d in enriched if d["dup_signature_criape"])
 
     for d in enriched:
         d["dup_count_h1"] = sig_h1_counts.get(d["dup_signature_h1"], 0) if d["dup_signature_h1"] else 0
         d["dup_count_h2"] = sig_h2_counts.get(d["dup_signature_h2"], 0) if d["dup_signature_h2"] else 0
         d["dup_count_h2flex"] = sig_h2flex_counts.get(d["dup_signature_h2flex"], 0) if d["dup_signature_h2flex"] else 0
         d["dup_count_h3"] = sig_h3_counts.get(d["dup_signature_h3"], 0) if d["dup_signature_h3"] else 0
+        d["dup_count_criape"] = sig_criape_counts.get(d["dup_signature_criape"], 0) if d["dup_signature_criape"] else 0
         is_h1_dup = d["dup_count_h1"] >= 2
         is_h2_dup = d["dup_count_h2"] >= 2
         is_h2flex_dup = d["dup_count_h2flex"] >= 2
         is_h3_dup = d["dup_count_h3"] >= 2
+        is_criape_dup = d["dup_count_criape"] >= 2
         is_h4 = d["dealname_clone_flag"] == 1
-        d["e_potencial_dup"] = 1 if (is_h1_dup or is_h2_dup or is_h2flex_dup or is_h3_dup or is_h4) else 0
+        d["e_potencial_dup"] = 1 if (is_h1_dup or is_h2_dup or is_h2flex_dup or is_h3_dup or is_criape_dup or is_h4) else 0
         if is_h1_dup or is_h2_dup or is_h4:
             d["dup_severity"] = "ALTA"
-        elif is_h2flex_dup or is_h3_dup:
+        elif is_h2flex_dup or is_h3_dup or is_criape_dup:
             d["dup_severity"] = "MEDIA"
         else:
             d["dup_severity"] = ""
@@ -2266,6 +2283,7 @@ def main():
     keep_h2 = _resolve_keep(enriched, "dup_signature_h2")
     keep_h2flex = _resolve_keep(enriched, "dup_signature_h2flex")
     keep_h3 = _resolve_keep(enriched, "dup_signature_h3")
+    keep_criape = _resolve_keep(enriched, "dup_signature_criape")
     for d in enriched:
         did = d["deal_id"]
         if did in keep_h1:
