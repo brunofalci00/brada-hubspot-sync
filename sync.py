@@ -1665,6 +1665,7 @@ def sync_parceiro_cnpj_criap(deals_list, companies_list):
     pulou_correto = 0
     pulou_sem_parceiro = 0
     pulou_nao_criap = 0
+    pulou_orfao = 0
     erros = 0
 
     for d in deals_list:
@@ -1679,7 +1680,13 @@ def sync_parceiro_cnpj_criap(deals_list, companies_list):
             pulou_sem_parceiro += 1
             continue
 
-        cnpj_correto = cnpj_by_company.get(parceiro_id, "")
+        # Hardening (merge lossless): se a company parceira foi mesclada/aposentada,
+        # parceiro_id some do dict. NÃO tratar como "limpar" (apagaria o CNPJ do deal) —
+        # pular como órfão e preservar o valor atual até o remap pós-merge corrigir o ID.
+        if parceiro_id not in cnpj_by_company:
+            pulou_orfao += 1
+            continue
+        cnpj_correto = cnpj_by_company[parceiro_id]
         cnpj_atual = (p.get("parceiro_indicador_cnpj_criap") or "").strip()
         if cnpj_atual == cnpj_correto:
             pulou_correto += 1
@@ -1696,7 +1703,7 @@ def sync_parceiro_cnpj_criap(deals_list, companies_list):
         time.sleep(0.05)
 
     print(f"sync_parceiro_cnpj_criap: patches={patches} | ja_correto={pulou_correto} | "
-          f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | erros={erros}")
+          f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | orfao={pulou_orfao} | erros={erros}")
     return patches
 
 
@@ -1716,6 +1723,7 @@ def sync_parceiro_nome_criap(deals_list, companies_list):
     pulou_correto = 0
     pulou_sem_parceiro = 0
     pulou_nao_criap = 0
+    pulou_orfao = 0
     erros = 0
 
     for d in deals_list:
@@ -1730,7 +1738,11 @@ def sync_parceiro_nome_criap(deals_list, companies_list):
             pulou_sem_parceiro += 1
             continue
 
-        nome_correto = name_by_company.get(parceiro_id, "")
+        # Hardening (merge lossless): parceira mesclada/aposentada → não apagar o nome.
+        if parceiro_id not in name_by_company:
+            pulou_orfao += 1
+            continue
+        nome_correto = name_by_company[parceiro_id]
         nome_atual = (p.get("parceiro_indicador_nome_criap") or "").strip()
         if nome_atual == nome_correto:
             pulou_correto += 1
@@ -1747,7 +1759,7 @@ def sync_parceiro_nome_criap(deals_list, companies_list):
         time.sleep(0.05)
 
     print(f"sync_parceiro_nome_criap: patches={patches} | ja_correto={pulou_correto} | "
-          f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | erros={erros}")
+          f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | orfao={pulou_orfao} | erros={erros}")
     return patches
 
 
