@@ -10,6 +10,7 @@ Padrao: espelha a arquitetura do dashboard corridas (brada-tickets-sync).
 import datetime
 import json
 import os
+import re
 import time
 from collections import Counter, defaultdict
 
@@ -1435,6 +1436,31 @@ def _norm_key(s):
     return " ".join(s.split())
 
 
+# Sprint 1 (chave canonica de NOME): estende _norm_key removendo sufixo de data, ISS/imposto e
+# forma societaria (so como sufixo), tirando pontuacao residual e despacando marcas conhecidas.
+# NAO e o dkey (ops/reconciliacao_planilha_cards.py), que despaca TUDO — _norm_key2 mantem os
+# espacos entre palavras (pra empresa_canonica nao colar tokens). Ver Diagnostico_Modelo_Sprints_03jun.
+_BRAND_DESPACE = {"nu bank": "nubank"}  # marcas cujo canonico e 1 token; extensivel
+_RE_DATA = re.compile(r"\b\d{1,2}\s*[/.\-]\s*\d{1,2}\s*[/.\-]\s*\d{2,4}\b")
+_RE_LIXO = re.compile(r"\b(iss|imposto)\b")
+_RE_FORMA = re.compile(r"\b(ltda|s a|sa|eireli|epp|mei|me)\s*$")  # forma societaria so como sufixo
+
+
+def _norm_key2(s):
+    """Chave canonica de NOME. Estende _norm_key: remove data, ISS/imposto, forma societaria
+    (sufixo), pontuacao residual e despaca marcas conhecidas. Mantem espacos entre palavras."""
+    k = _norm_key(s)
+    if not k:
+        return ""
+    k = _RE_DATA.sub(" ", k)             # remove datas (precisa dos separadores / . -)
+    k = _RE_LIXO.sub(" ", k)             # remove iss/imposto
+    k = re.sub(r"[^a-z0-9 ]", " ", k)    # pontuacao -> espaco (s/a->s a, s.a.->s a)
+    k = " ".join(k.split())
+    k = _RE_FORMA.sub("", k).strip()     # remove forma societaria (sufixo), ja sem pontuacao
+    k = " ".join(k.split())
+    return _BRAND_DESPACE.get(k, k)
+
+
 # Mapa de normalização do proponente livre (nome_do_proponente, sujo) -> 1 das 8 entidades
 # internas do grupo. Mais específico primeiro (egp cir antes de egp; conectados do bem/caxias
 # antes de conectados). Reusado pela auto-derivação interno/externo (Sprint 0.1) e pelo
@@ -1499,7 +1525,7 @@ def build_consolidado_layer(enriched, stages=None):
         numero_projeto = e.get("numero_do_projeto") or ""
         projeto_benef = e.get("projeto_beneficiario_criap") or ""
         # Etapa 1 (02/06): chave canonica de empresa pra analise/agrupamento (nao mescla cadastro).
-        empresa_canonica = _normalize_cnpj(e.get("company_cnpj") or "") or _norm_key(e.get("company_name") or "")
+        empresa_canonica = _normalize_cnpj(e.get("company_cnpj") or "") or _norm_key2(e.get("company_name") or "")
 
         # interno/externo deriva do PROPONENTE (reunião Leila/Ivan 02/06): entidade do grupo
         # (EGP/Encaminhando/Brada/CRIAPE) = Interno (15%); terceiro (Externo) = Externo (10%).
@@ -1829,6 +1855,64 @@ def sync_parceiro_nome_criap(deals_list, companies_list):
 
     print(f"sync_parceiro_nome_criap: patches={patches} | ja_correto={pulou_correto} | "
           f"sem_parceiro={pulou_sem_parceiro} | nao_criap={pulou_nao_criap} | orfao={pulou_orfao} | erros={erros}")
+    return patches
+
+
+def sync_nome_projeto_criap(deals_list, dry_run=False):
+    """Forward-fill (Sprint 1): espelha o label do enum projeto_beneficiario_criap pra
+    Deal.nome_do_projeto nos deals CRIAPE (hoje 0/130 preenchidos). O label vem da property
+    LIVE (nao do setup_criap_fields.py stale; nao da pra title-case por causa de 'Ecocine+').
+    Idempotente: PATCH so se nome_do_projeto != label. Deals CRIAPE sem enum ficam vazios.
+    Ver Diagnostico_Modelo_Sprints_03jun + feedback_forward_fill_property.
+    dry_run=True so conta (nao escreve no CRM)."""
+    try:
+        rp = req("GET", "/crm/v3/properties/deals/projeto_beneficiario_criap")
+        label_by_value = {o["value"]: o["label"] for o in rp.json().get("options", [])}
+    except Exception as e:
+        print(f"  [erro] sync_nome_projeto_criap: nao carregou enum projeto_beneficiario_criap: {e}")
+        return 0
+
+    patches = 0
+    pulou_correto = 0
+    pulou_nao_criap = 0
+    pulou_sem_enum = 0
+    erros = 0
+
+    for d in deals_list:
+        did = d["id"]
+        p = d.get("properties", {}) or {}
+        if p.get("produto") != CRIAP_PRODUTO_VALUE:
+            pulou_nao_criap += 1
+            continue
+
+        enum_val = (p.get("projeto_beneficiario_criap") or "").strip()
+        if not enum_val:
+            pulou_sem_enum += 1
+            continue
+
+        nome_correto = label_by_value.get(enum_val, enum_val)
+        nome_atual = (p.get("nome_do_projeto") or "").strip()
+        if nome_atual == nome_correto:
+            pulou_correto += 1
+            continue
+
+        if dry_run:
+            patches += 1
+            continue
+
+        r = req("PATCH", f"/crm/v3/objects/deals/{did}",
+                json={"properties": {"nome_do_projeto": nome_correto}})
+        if r.status_code == 200:
+            patches += 1
+        else:
+            erros += 1
+            if erros <= 3:
+                print(f"  [erro] PATCH nome_do_projeto deal {did}: {r.status_code} {r.text[:150]}")
+        time.sleep(0.05)
+
+    tag = "DRY-RUN " if dry_run else ""
+    print(f"sync_nome_projeto_criap: {tag}patches={patches} | ja_correto={pulou_correto} | "
+          f"sem_enum={pulou_sem_enum} | nao_criap={pulou_nao_criap} | erros={erros}")
     return patches
 
 
@@ -2473,6 +2557,11 @@ def main():
             sync_parceiro_nome_criap(deals, all_companies or [])
         except Exception as e:
             print(f"[warn] sync_parceiro_nome_criap falhou: {e}")
+
+        try:
+            sync_nome_projeto_criap(deals)
+        except Exception as e:
+            print(f"[warn] sync_nome_projeto_criap falhou: {e}")
 
         try:
             sync_parceiro_associations_criap(deals, deal_to_company)
