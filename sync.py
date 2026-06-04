@@ -691,6 +691,12 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "mes_criacao": mes_criacao,
         "ano_fechamento": ano_fechamento,
         "mes_fechamento": mes_fechamento,
+        # YYYY-MM-DD date-only: o conector do Looker tipa como Data nativa (createdate/
+        # closedate em ISO 'YYYY-MM-DDTHH:MM:SSZ' sao detectados como Texto e nao servem
+        # como Dimensao do periodo). Bind no Looker: vendido/fechado -> data_fechamento;
+        # pipeline/safra/atividade -> data_criacao.
+        "data_criacao": createdate.strftime("%Y-%m-%d") if createdate else "",
+        "data_fechamento": closedate.strftime("%Y-%m-%d") if closedate else "",
         "dias_desde_criacao": dias_desde_criacao if dias_desde_criacao is not None else "",
         "dias_no_stage_atual": dias_no_stage if dias_no_stage is not None else "",
         # Company
