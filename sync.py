@@ -57,6 +57,7 @@ DEAL_PROPERTIES = [
     "trabalhado_por",  # "Executivo Brada" vs "Automatize" (E1) - chave remuneracao
     "motivo_de_perda",
     "nome_do_proponente",
+    "tipo_de_proponente",  # 03/06: keystone interno/externo (grupo=interno / Externo=externo). Ver Modelo_Interno_Externo_Tipo_Proponente
     "nome_do_projeto",
     "numero_do_projeto",  # Sprint 1 consolidado: chave de projeto (linkagem cross-pipeline)
     "createdate",
@@ -676,6 +677,7 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "e_o_primeiro_match": p.get("e_o_primeiro_match", ""),
         # Contexto
         "nome_do_proponente": p.get("nome_do_proponente", ""),
+        "tipo_de_proponente": p.get("tipo_de_proponente", ""),  # 03/06: deriva interno/externo
         "nome_do_projeto": p.get("nome_do_projeto", ""),
         "numero_do_projeto": p.get("numero_do_projeto", ""),  # Sprint 1: chave de projeto
         "projeto_beneficiario_criap": p.get("projeto_beneficiario_criap", ""),  # Sprint 1: projeto_key CRIAPE
@@ -1433,6 +1435,36 @@ def _norm_key(s):
     return " ".join(s.split())
 
 
+# Mapa de normalização do proponente livre (nome_do_proponente, sujo) -> 1 das 8 entidades
+# internas do grupo. Mais específico primeiro (egp cir antes de egp; conectados do bem/caxias
+# antes de conectados). Reusado pela auto-derivação interno/externo (Sprint 0.1) e pelo
+# forward-fill da property tipo_de_proponente (Sprint 2.0). Ver Diagnostico_Modelo_Sprints_03jun.
+PROPONENTE_INTERNO_MATCHERS = [
+    ("egp cir", "EGP Cir. Soc. Cultura IR"),
+    ("egp", "EGP"),
+    ("encaminhando", "Encaminhando"),
+    ("conectados do bem", "Conectados do Bem"),
+    ("conectados caxias", "Conectados Caxias"),
+    ("circuito social", "Circuito Social de Corrida"),
+    ("conectados", "Conectados"),
+    ("brada digital", "Brada Digital"),
+    ("proj.casa", "Brada Digital"),
+    ("somos brada", "Brada Digital"),  # PENDENTE confirmação Bruno (Sprint 2.3) — interno em todo caso
+    ("brada", "Brada Digital"),
+]
+
+
+def _map_proponente_interno(nome):
+    """nome_do_proponente livre -> entidade interna canônica (1 das 8) ou None (terceiro/vazio)."""
+    p = _norm_key(nome)
+    if not p:
+        return None
+    for sub, entidade in PROPONENTE_INTERNO_MATCHERS:
+        if sub in p:
+            return entidade
+    return None
+
+
 def build_consolidado_layer(enriched, stages=None):
     """Backbone único (grão = 1 deal) do qual derivam as 3 views: reporting Luciana,
     visão 4 colunas Vitor, dashboard CRIAPE (Sprint 1).
@@ -1469,16 +1501,31 @@ def build_consolidado_layer(enriched, stages=None):
         # Etapa 1 (02/06): chave canonica de empresa pra analise/agrupamento (nao mescla cadastro).
         empresa_canonica = _normalize_cnpj(e.get("company_cnpj") or "") or _norm_key(e.get("company_name") or "")
 
-        # interno/externo (split enum Match interno/externo). CRIAPE/Elaboração ficam
-        # vazios até decisão Ivan (item #1 da reunião).
-        if produto == "Match interno":
-            interno_externo = "Interno"
-        elif produto == "Match externo":
+        # interno/externo deriva do PROPONENTE (reunião Leila/Ivan 02/06): entidade do grupo
+        # (EGP/Encaminhando/Brada/CRIAPE) = Interno (15%); terceiro (Externo) = Externo (10%).
+        # Via property tipo_de_proponente (substitui o split de produto, SUPERSEDED). Vazio
+        # até classificar. Ver Modelo_Interno_Externo_Tipo_Proponente.
+        # Precedência: (1) classificação explícita na property tipo_de_proponente vence;
+        # (2) produto==CRIAPE = sempre interno (regra estrutural); (3) AUTO-DERIVAÇÃO do
+        # nome_do_proponente (proponente do grupo=Interno; terceiro=Externo); (4) vazio="".
+        # A auto-derivação cobre ~89% do valor won sem trabalho manual (Sprint 0.1).
+        tipo_prop = (e.get("tipo_de_proponente") or "").strip()
+        nome_prop = (e.get("nome_do_proponente") or "").strip()
+        if tipo_prop == "Externo":
             interno_externo = "Externo"
+        elif tipo_prop:
+            interno_externo = "Interno"  # classificação explícita (override) vence
+        elif produto == "CRIAPE":
+            interno_externo = "Interno"  # CRIAPE (Proponente) = sempre projeto interno (enum é o marcador)
+        elif _map_proponente_interno(nome_prop):
+            interno_externo = "Interno"  # proponente ∈ 8 entidades do grupo
+        elif nome_prop:
+            interno_externo = "Externo"  # proponente terceiro presente
         else:
-            interno_externo = ""
+            interno_externo = ""  # sem classificação (residual manual / planilha)
 
-        # Comissão Vendas% (só quando classificado + valor presente). PENDENTE Ivan/Luciana.
+        # Comissão BRADA = valor × 15/10% → Líquido × 0,88 (CONFIRMADO na planilha do Ivan).
+        # comissao_brada/liquido = camada CONFIÁVEL (alimenta valor_efetivo_brada das views).
         comissao_brada = liquido = c_ivan = c_jaque = c_externo = 0.0
         if interno_externo == "Interno":
             comissao_brada = valor * PCT_INTERNO
@@ -1486,18 +1533,25 @@ def build_consolidado_layer(enriched, stages=None):
             comissao_brada = valor * PCT_EXTERNO
         if comissao_brada:
             liquido = comissao_brada * FATOR_LIQUIDO
-            c_ivan = liquido * PCT_IVAN
-            c_jaque = liquido * PCT_JAQUE
-            c_externo = liquido * PCT_EXTERNO_PESSOA
+            # Split por pessoa (Ivan/Jaque) = stream Vendas% (Match). CRIAPE/Elaboração têm modelo
+            # próprio (pendente Ivan) → per-pessoa fica 0 (valor_efetivo_brada/comissao_brada seguem
+            # valendo pro "quanto" das views). PROVISÓRIO até reunião do financeiro.
+            if produto == "Match":
+                c_ivan = liquido * PCT_IVAN
+                # Jaque 4% e externo 3% são XOR por deal (dependem de "Nome do externo", campo que
+                # NÃO existe no HubSpot). Default = Jaque; externo fica 0 até esse sinal existir.
+                c_jaque = liquido * PCT_JAQUE
+                c_externo = 0.0
 
+        # status deriva da classificação (tipo_de_proponente), não mais do produto.
         if interno_externo and valor > 0:
             comissao_status = "calculada"
         elif interno_externo and valor <= 0:
             comissao_status = "pendente_valor"
-        elif produto in ("Match", "Match interno", "Match externo"):
-            comissao_status = "pendente_classificacao"
+        elif not interno_externo:
+            comissao_status = "pendente_classificacao"  # tipo_de_proponente vazio
         else:
-            comissao_status = "pendente_modelo"  # CRIAPE/Elaboração/outros (modelo pendente Ivan)
+            comissao_status = "pendente_modelo"
 
         if produto in ("Match", "Match interno", "Match externo"):
             fluxo_comissao = "Vendas%"
@@ -1556,7 +1610,6 @@ def build_consolidado_layer(enriched, stages=None):
             "data_aporte": e.get("data_do_aporte", ""),
             "valor_bruto": valor,
             "valor_vendido": valor_vendido,
-            "comissao_brada": round(comissao_brada, 2),
             "liquido_brada": round(liquido, 2),
             "comissao_ivan": round(c_ivan, 2),
             "comissao_jaque": round(c_jaque, 2),
@@ -1568,6 +1621,8 @@ def build_consolidado_layer(enriched, stages=None):
             "lei_principal": e.get("lei_principal", ""),
             "ano": e.get("ano_fechamento", ""),
             "empresa_canonica": empresa_canonica,  # Etapa 1: coluna no FIM (protege binding Looker)
+            "tipo_de_proponente": tipo_prop,  # 03/06: classificação (grupo vs Externo)
+            "valor_efetivo_brada": round(comissao_brada, 2),  # 03/06: "quanto" das views (= % efetivo Brada)
         })
 
     # 2a passada: flag de overlap cross-pipeline (mesma projeto_key em >1 pipeline).
