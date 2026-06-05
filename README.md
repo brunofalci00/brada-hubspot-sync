@@ -24,7 +24,12 @@ GitHub Actions (cron 0 * * * *)
 - `sync.py` — script principal
 - `.github/workflows/sync.yml` — workflow cron + manual trigger
 - `requirements.txt` — dependências Python
+- `check_looker_contract.py` — guardrail de schema (roda no CI após o sync; ver "Contrato de datas")
 - `service-account-key.json` — credenciais Google **(não commitar, já no .gitignore)**
+
+## Contrato de datas (Looker)
+
+Datas que viram dimensão de período saem do sync em `AAAA-MM-DD` (`data_criacao`, `data_fechamento`), além do ISO cru. No Looker, **toda dimensão de período é campo calculado `PARSE_DATE`** (`data_*_dt`), nunca a coluna crua: ISO (`...T...Z`) e coluna esparsa (muitos brancos) viram **Texto** e quebram o filtro de data (vão pra "Não há dados"). Regra completa e checklist no vault: `PLAYBOOK_datas_sheets_looker`. O `check_looker_contract.py` falha o CI (sem bloquear o dado já gravado) se uma coluna Looker-bound sumir ou uma data sair fora de `AAAA-MM-DD`.
 
 ## Setup (primeira vez)
 

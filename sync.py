@@ -691,10 +691,14 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "mes_criacao": mes_criacao,
         "ano_fechamento": ano_fechamento,
         "mes_fechamento": mes_fechamento,
-        # YYYY-MM-DD date-only: o conector do Looker tipa como Data nativa (createdate/
-        # closedate em ISO 'YYYY-MM-DDTHH:MM:SSZ' sao detectados como Texto e nao servem
-        # como Dimensao do periodo). Bind no Looker: vendido/fechado -> data_fechamento;
-        # pipeline/safra/atividade -> data_criacao.
+        # CONTRATO LOOKER (datas): emitir AAAA-MM-DD date-only como insumo das
+        # dimensoes de periodo. createdate/closedate em ISO viram Texto no Looker; e
+        # coluna ESPARSA (ex. data_fechamento ~58% preenchida) tambem vira Texto e nao
+        # aceita conversao manual. Por isso, no Looker, NUNCA amarrar o periodo na
+        # coluna crua: criar campo calculado data_*_dt = PARSE_DATE("%Y-%m-%d", data_*)
+        # e amarrar nele. Bind: vendido/fechado -> data_fechamento; pipeline/safra ->
+        # data_criacao. Detalhe+checklist no vault: PLAYBOOK_datas_sheets_looker.
+        # Guardrail: check_looker_contract.py (roda no CI apos a escrita).
         "data_criacao": createdate.strftime("%Y-%m-%d") if createdate else "",
         "data_fechamento": closedate.strftime("%Y-%m-%d") if closedate else "",
         "dias_desde_criacao": dias_desde_criacao if dias_desde_criacao is not None else "",
