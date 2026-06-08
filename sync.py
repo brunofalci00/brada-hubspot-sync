@@ -70,6 +70,8 @@ DEAL_PROPERTIES = [
     "valor_oportunidade",
     "origem_lead",
     "status_contato",
+    "email",      # custom Deal — e-mail do contato do incentivador (lista Rafaela 08/06)
+    "telefone",   # custom Deal — telefone do contato (irmao de email)
     "lei_principal",  # criado em E1 - puxa do HubSpot, argmax vira fallback
     "linha_de_imposto_categoria",  # criado em E1 (IR/ICMS/ISS)
     "cnpj_do_incentivador",  # criado em E1-bis - CNPJ da filial/PDV; vazio = fallback Company.cnpj
@@ -404,6 +406,59 @@ def fetch_companies(company_ids):
     return companies
 
 
+def fetch_assoc(from_type, to_type, from_ids):
+    """Retorna {str(from_id): [str(to_id), ...]} via associations v4 batch.
+
+    Diferente de fetch_associated_companies: NAO filtra primary — pega TODOS os
+    associados, pq no fallback de email/telefone interessa o primeiro contato com
+    o campo preenchido (lista Rafaela 08/06). Usado pra deals->contacts e
+    companies->contacts.
+    """
+    out = {}
+    ids = list({str(i) for i in from_ids if i})
+    for i in range(0, len(ids), 100):
+        r = req(
+            "POST",
+            f"/crm/v4/associations/{from_type}/{to_type}/batch/read",
+            json={"inputs": [{"id": x} for x in ids[i:i + 100]]},
+        )
+        if r.status_code not in (200, 207):
+            print(f"ERRO assoc {from_type}->{to_type}: {r.status_code}")
+            continue
+        for res in r.json().get("results", []):
+            out[str(res["from"]["id"])] = [
+                str(t["toObjectId"]) for t in res.get("to", [])
+            ]
+    return out
+
+
+def fetch_contacts(contact_ids):
+    """Retorna {contact_id: {email, phone}}.
+
+    Fonte de fallback do email/telefone do deal quando Deal.email/Deal.telefone
+    estao vazios. Cobertura medida 08/06: Deal.email 34% -> +contato do deal 42%
+    -> +contato da company 62% (lista Rafaela).
+    """
+    contacts = {}
+    unique_ids = list({str(cid) for cid in contact_ids if cid})
+    for i in range(0, len(unique_ids), 100):
+        r = req(
+            "POST",
+            "/crm/v3/objects/contacts/batch/read",
+            json={
+                "properties": ["email", "phone"],
+                "inputs": [{"id": cid} for cid in unique_ids[i:i + 100]],
+            },
+        )
+        if r.status_code != 200:
+            print(f"ERRO batch contacts: {r.status_code}")
+            continue
+        for c in r.json().get("results", []):
+            contacts[c["id"]] = c.get("properties", {})
+    print(f"Contacts carregados: {len(contacts)}")
+    return contacts
+
+
 def fetch_all_companies():
     """Puxa TODAS as Companies via Search API paginada (incluindo órfãs
     sem Deal associado). Usado pra popular aba raw_companies do Sheet.
@@ -503,7 +558,8 @@ def _normalize_uf(s):
 # ENRIQUECIMENTO
 # ===================================================
 
-def enrich(deal, stages, deal_to_company, companies, owners=None):
+def enrich(deal, stages, deal_to_company, companies, owners=None,
+           deal_to_contacts=None, company_to_contacts=None, contacts=None):
     p = deal.get("properties", {}) or {}
     deal_id = deal["id"]
     stage_id = p.get("dealstage") or ""
@@ -625,6 +681,25 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         t in dn_low for t in ["(clone)", "(copia)", "(copy)", "_copy", "(cópia)"]
     ) else 0
 
+    # Email/telefone do incentivador (lista Rafaela 08/06): cadeia de 3 niveis —
+    # campo do proprio Deal -> contato associado ao Deal -> contato associado a
+    # Company. Cobertura medida: 34% -> 42% -> 62%.
+    def _contact_field(field, deal_val):
+        if deal_val:
+            return deal_val
+        for cid in (deal_to_contacts or {}).get(str(deal_id), []):
+            v = (contacts or {}).get(cid, {}).get(field)
+            if v:
+                return v
+        for cid in (company_to_contacts or {}).get(str(company_id), []):
+            v = (contacts or {}).get(cid, {}).get(field)
+            if v:
+                return v
+        return ""
+
+    email_eff = _contact_field("email", (p.get("email") or "").strip())
+    telefone_eff = _contact_field("phone", (p.get("telefone") or "").strip())
+
     return {
         "deal_id": deal_id,
         "deal_name": p.get("dealname", ""),
@@ -676,6 +751,10 @@ def enrich(deal, stages, deal_to_company, companies, owners=None):
         "origem_lead": p.get("origem_lead", "") or "(em preenchimento)",
         "status_contato": p.get("status_contato", "") or "(em preenchimento)",
         "e_o_primeiro_match": p.get("e_o_primeiro_match", ""),
+        # Contato do incentivador (lista Rafaela 08/06): Deal.email/telefone com
+        # fallback pro contato do deal e depois pro contato da company. ~62% fill.
+        "email": email_eff,
+        "telefone": telefone_eff,
         # Contexto
         "nome_do_proponente": p.get("nome_do_proponente", ""),
         "tipo_de_proponente": p.get("tipo_de_proponente", ""),  # 03/06: deriva interno/externo
@@ -2376,7 +2455,22 @@ def main():
     deal_to_company = fetch_associated_companies(deal_ids)
     companies = fetch_companies(deal_to_company.values())
 
-    enriched = [enrich(d, stages, deal_to_company, companies, owners=owners) for d in deals]
+    # Contato (email/telefone do incentivador — lista Rafaela 08/06): associacoes
+    # deal->contato e company->contato pro fallback em 3 niveis no enrich().
+    deal_to_contacts = fetch_assoc("deals", "contacts", deal_ids)
+    company_to_contacts = fetch_assoc("companies", "contacts", list(deal_to_company.values()))
+    all_contact_ids = (
+        {c for v in deal_to_contacts.values() for c in v}
+        | {c for v in company_to_contacts.values() for c in v}
+    )
+    contacts = fetch_contacts(sorted(all_contact_ids))
+
+    enriched = [
+        enrich(d, stages, deal_to_company, companies, owners=owners,
+               deal_to_contacts=deal_to_contacts,
+               company_to_contacts=company_to_contacts, contacts=contacts)
+        for d in deals
+    ]
 
     # Fase 9 (30/04): segunda passada — preenche dup_count/severidade/keep_suggestion
     # baseado em visao global de todos deals enriched. Counter eh O(N), trivial.
