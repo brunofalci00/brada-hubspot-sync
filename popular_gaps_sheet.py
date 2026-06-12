@@ -38,6 +38,22 @@ LEIS = ["valor_lei_rouanet", "valor_lei_do_esporte", "valor_lei_do_esporte_estad
         "valor_lei_da_crianca_e_do_adolescente", "valor_lei_do_idoso",
         "valor_lei_da_reciclagem", "valor_pronas", "valor_pronon"]
 
+# Segmentacao venda x cadastro (Ivan 12/06): o "puxao de orelha" do Ivan mira o
+# dado de VENDA que trava comissao (sao exatamente as colunas que a planilha
+# financeira puxa do deal); higiene de cadastro de Company fica numa faixa fria.
+# Acoplado de proposito aos tipos definidos em compute_gaps (mesmo arquivo).
+TIPOS_VENDA = {
+    "2. Ganho sem closedate",
+    "3. Ganho sem valor_do_aporte",
+    "4. Ganho sem lei_principal",
+    "5. Ganho sem nome_do_proponente",
+    "6. Ganho sem nome_do_projeto",
+}
+
+
+def _segmento(tipo):
+    return "Venda" if tipo in TIPOS_VENDA else "Cadastro"
+
 
 def _num(x):
     try:
@@ -274,33 +290,117 @@ def _ensure_aba(sh, name, rows, cols):
         return sh.add_worksheet(title=name, rows=rows, cols=cols)
 
 
-def write_gaps_to_sheet(gaps, sh):
-    """Escreve gaps na Sheet `sh` (aberta com gspread). 1 aba Resumo + 1 por executivo."""
-    # === Aba Resumo ===
+def _purge_conditional_formats(sh):
+    """Remove TODAS as regras de formatacao condicional da planilha.
+
+    `clear()` nao apaga regras de formatacao condicional, entao elas acumulam
+    a cada run (centenas por aba ao longo das semanas). Removemos todas e o loop
+    re-adiciona as frescas — resultado: exatamente as regras deste run.
+    """
+    try:
+        meta = sh.fetch_sheet_metadata()
+    except Exception as e:
+        print(f"  [warn] purge cond format (fetch meta): {e}")
+        return
+    reqs = []
+    for s in meta.get("sheets", []):
+        sid = s["properties"]["sheetId"]
+        n = len(s.get("conditionalFormats", []) or [])
+        # deletar do indice mais alto pro mais baixo (cada delete reindexa)
+        for i in range(n - 1, -1, -1):
+            reqs.append({"deleteConditionalFormatRule": {"sheetId": sid, "index": i}})
+    if reqs:
+        try:
+            sh.batch_update({"requests": reqs})
+            print(f"  [cond format] {len(reqs)} regras antigas removidas")
+        except Exception as e:
+            print(f"  [warn] purge cond format (delete): {e}")
+
+
+# Abas nao-owner a preservar SEMPRE no prune (criadas por outros scripts/manuais).
+# Estender aqui se um script novo criar aba na GAPS_SHEET.
+ABAS_PRESERVADAS = {"Resumo", "Resolucoes CNPJ — Ivan", "(sem owner)"}
+
+
+def _orphan_tab_targets(all_titles, nomes_owner_validos):
+    """Pura/testavel: dado os titulos das abas + nomes de owners validos,
+    retorna os titulos a deletar (abas de owners que sairam/renomearam).
+
+    Preserva ABAS_PRESERVADAS, owners validos e abas '_'-prefixadas. Guard-rails:
+    nao prune se houver poucos owners (fetch falho) ou se fosse deletar quase tudo.
+    """
+    if len(nomes_owner_validos) < 3:
+        return []  # sanity: fetch de owners provavelmente falhou
+    preservar = set(ABAS_PRESERVADAS) | {_safe_aba_name(n) for n in nomes_owner_validos}
+    alvos = [t for t in all_titles
+             if t not in preservar and not t.startswith("_")]
+    if len(all_titles) - len(alvos) < 2:
+        return []  # sanity: nao deixar a planilha quase vazia
+    return alvos
+
+
+def _prune_orphan_tabs(sh, nomes_owner_validos):
+    """Deleta abas de owners que nao existem mais (ex.: Jessica, Carina antiga)."""
+    if os.environ.get("GAPS_PRUNE_TABS", "1") != "1":
+        print("  [prune] desativado via GAPS_PRUNE_TABS")
+        return
+    todas = sh.worksheets()
+    alvos = set(_orphan_tab_targets([w.title for w in todas], nomes_owner_validos))
+    if not alvos:
+        print("  [prune] nenhuma aba orfa")
+        return
+    for w in todas:
+        if w.title in alvos:
+            try:
+                sh.del_worksheet(w)
+                print(f"  [prune] aba orfa deletada: {w.title!r}")
+            except Exception as e:
+                print(f"  [warn] prune {w.title!r}: {e}")
+
+
+def write_gaps_to_sheet(gaps, sh, owners=None):
+    """Escreve gaps na Sheet `sh`. 1 aba Resumo + 1 por executivo.
+
+    Segmenta os tipos em Venda (trava comissao) x Cadastro (higiene de Company);
+    Venda fica no topo de cada aba (decisao Ivan 12/06). Zera as regras de
+    formatacao condicional acumuladas e faz prune das abas de owners que sairam.
+    """
+    by_owner = defaultdict(list)
+    for g in gaps:
+        by_owner[g["owner_nome"]].append(g)
+
+    # === Aba Resumo (com subtotal Venda x Cadastro por executivo) ===
     matrix = defaultdict(lambda: defaultdict(int))
     todos_tipos = sorted({g["tipo"] for g in gaps})
     todos_owners = sorted({g["owner_nome"] for g in gaps})
     for g in gaps:
         matrix[g["owner_nome"]][g["tipo"]] += 1
 
-    header = ["Executivo / Tipo de gap"] + todos_tipos + ["TOTAL"]
+    header = (["Executivo / Tipo de gap"] + todos_tipos
+              + ["» TOTAL VENDA", "TOTAL Cadastro", "TOTAL"])
     rows = []
     for owner in todos_owners:
         row = [owner]
-        total = 0
+        tot_venda = tot_cad = 0
         for tipo in todos_tipos:
             n = matrix[owner][tipo]
             row.append(n if n else "")
-            total += n
-        row.append(total)
+            if _segmento(tipo) == "Venda":
+                tot_venda += n
+            else:
+                tot_cad += n
+        row += [tot_venda or "", tot_cad or "", tot_venda + tot_cad]
         rows.append(row)
     total_row = ["TOTAL GERAL"]
-    grand_total = 0
+    g_venda = g_cad = 0
     for tipo in todos_tipos:
         n = sum(matrix[owner][tipo] for owner in todos_owners)
         total_row.append(n)
-        grand_total += n
-    total_row.append(grand_total)
+        if _segmento(tipo) == "Venda":
+            g_venda += n
+        else:
+            g_cad += n
+    total_row += [g_venda, g_cad, g_venda + g_cad]
     rows.append(total_row)
 
     aba = _ensure_aba(sh, "Resumo", rows=len(rows) + 5, cols=len(header) + 2)
@@ -310,50 +410,59 @@ def write_gaps_to_sheet(gaps, sh):
     last_row = len(rows) + 1
     aba.format(f"A{last_row}:Z{last_row}", {"textFormat": {"bold": True},
                                             "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
-    aba.update(values=[[f"Atualizado em {datetime.now(BRT).strftime('%d/%m/%Y %H:%M')} (BRT)"]],
+    aba.update(values=[[f"Atualizado em {datetime.now(BRT).strftime('%d/%m/%Y %H:%M')} (BRT) — "
+                        "Venda = trava comissao (foco do executivo); Cadastro = higiene de Company"]],
                range_name=f"A{last_row + 2}", value_input_option="USER_ENTERED")
-    print(f"  Resumo: {len(todos_owners)} executivos, {len(todos_tipos)} tipos, {grand_total} gaps")
+    print(f"  Resumo: {len(todos_owners)} executivos, {len(todos_tipos)} tipos, "
+          f"{g_venda} venda + {g_cad} cadastro = {g_venda + g_cad} gaps")
     time.sleep(1.5)
 
-    # === Aba por executivo ===
-    gap_header = ["Tipo", "Prioridade", "Entidade", "ID", "Nome", "Link HubSpot", "O que fazer"]
-    by_owner = defaultdict(list)
-    for g in gaps:
-        by_owner[g["owner_nome"]].append(g)
+    # Zera regras de formatacao condicional acumuladas (clear() nao as apaga)
+    _purge_conditional_formats(sh)
 
+    # === Aba por executivo (Venda no topo) ===
+    gap_header = ["Segmento", "Tipo", "Prioridade", "Entidade", "ID", "Nome",
+                  "Link HubSpot", "O que fazer"]
     for owner_nome, owner_gaps in by_owner.items():
-        owner_gaps.sort(key=lambda g: (0 if g["prioridade"] == "ALTA" else 1, g["tipo"]))
+        owner_gaps.sort(key=lambda g: (0 if _segmento(g["tipo"]) == "Venda" else 1,
+                                       0 if g["prioridade"] == "ALTA" else 1, g["tipo"]))
         aba_name = _safe_aba_name(owner_nome)
-        rows = [[g["tipo"], g["prioridade"], g["entidade"], g["id"], g["nome"],
-                 g["link"], g["descricao"]] for g in owner_gaps]
+        rows = [[_segmento(g["tipo"]), g["tipo"], g["prioridade"], g["entidade"],
+                 g["id"], g["nome"], g["link"], g["descricao"]] for g in owner_gaps]
         aba = _ensure_aba(sh, aba_name, rows=len(rows) + 5, cols=len(gap_header))
         aba.update(values=[gap_header] + rows, range_name="A1", value_input_option="USER_ENTERED")
-        aba.format("A1:G1", {"textFormat": {"bold": True},
+        aba.format("A1:H1", {"textFormat": {"bold": True},
                              "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
-        # Conditional format: ALTA prioridade laranja
+        # Conditional format: Venda (col A) verde claro + ALTA (col C) laranja
         try:
-            sheet_id_internal = aba._properties["sheetId"]
-            sh.batch_update({
-                "requests": [{
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [{"sheetId": sheet_id_internal,
-                                        "startRowIndex": 1, "endRowIndex": len(rows) + 1,
-                                        "startColumnIndex": 1, "endColumnIndex": 2}],
-                            "booleanRule": {
-                                "condition": {"type": "TEXT_EQ",
-                                              "values": [{"userEnteredValue": "ALTA"}]},
-                                "format": {"backgroundColor": {"red": 1.0, "green": 0.85, "blue": 0.7}},
-                            }
-                        },
-                        "index": 0,
-                    }
-                }]
-            })
+            sid = aba._properties["sheetId"]
+            sh.batch_update({"requests": [
+                {"addConditionalFormatRule": {"rule": {
+                    "ranges": [{"sheetId": sid, "startRowIndex": 1, "endRowIndex": len(rows) + 1,
+                                "startColumnIndex": 0, "endColumnIndex": 1}],
+                    "booleanRule": {"condition": {"type": "TEXT_EQ",
+                                                  "values": [{"userEnteredValue": "Venda"}]},
+                                    "format": {"backgroundColor": {"red": 0.85, "green": 0.95, "blue": 0.85}}}},
+                    "index": 0}},
+                {"addConditionalFormatRule": {"rule": {
+                    "ranges": [{"sheetId": sid, "startRowIndex": 1, "endRowIndex": len(rows) + 1,
+                                "startColumnIndex": 2, "endColumnIndex": 3}],
+                    "booleanRule": {"condition": {"type": "TEXT_EQ",
+                                                  "values": [{"userEnteredValue": "ALTA"}]},
+                                    "format": {"backgroundColor": {"red": 1.0, "green": 0.85, "blue": 0.7}}}},
+                    "index": 0}},
+            ]})
         except Exception as e:
             print(f"  [warn] format conditional ({aba_name}): {e}")
         time.sleep(1.5)
-        print(f"  Aba '{aba_name}': {len(owner_gaps)} gaps")
+        nv = sum(1 for g in owner_gaps if _segmento(g["tipo"]) == "Venda")
+        print(f"  Aba '{aba_name}': {len(owner_gaps)} gaps ({nv} venda)")
+
+    # Prune de abas de owners que sairam/renomearam (ex.: Jessica, Carina antiga)
+    nomes_validos = set(by_owner.keys())
+    if owners:
+        nomes_validos |= set(owners.values())
+    _prune_orphan_tabs(sh, nomes_validos)
 
 
 def popular_gaps_sheet(deals, companies, deal_to_company, owners,
@@ -367,6 +476,6 @@ def popular_gaps_sheet(deals, companies, deal_to_company, owners,
                         ganho_stages_incentivador=ganho_stages_incentivador)
     print(f"  Total de gaps computados: {len(gaps)}")
     sh = gc.open_by_key(sheet_id)
-    write_gaps_to_sheet(gaps, sh)
+    write_gaps_to_sheet(gaps, sh, owners=owners)
     print(f"=== Fase 5 done — {len(gaps)} gaps escritos ===")
     return len(gaps)
