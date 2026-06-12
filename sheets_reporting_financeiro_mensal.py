@@ -32,7 +32,7 @@ import sys
 
 import gspread
 
-from sync import get_sheets_client
+from sync import get_sheets_client, PORTAL_ID
 
 # ===================================================
 # CONFIG
@@ -68,7 +68,7 @@ TARGET_HEADER = [
     "Comissão BRADA", "Líquido Brada", "Comissão Ivan 8%", "Comissão Jaque 4%",
     "Comissão externo 3%", "Nome do externo",
 ]
-TECH_HEADER = ["deal_id", "comissao_status", "closedate_status"]
+TECH_HEADER = ["link_hubspot", "deal_id", "comissao_status", "closedate_status"]
 
 # Traducao lei_principal -> "Fonte de recurso" do Ivan. APROXIMACAO (os
 # rotulos do Ivan sao texto livre: "Esporte IR", "IR esporte", "ISS RJ"...).
@@ -104,9 +104,10 @@ REF_OFICIAL_0806 = 24_138_755.97
 # leitura no meio do clear viria vazia/parcial. Abaixo do piso, nao escreve.
 MIN_ROWS_GUARD = 500
 
-VERSAO = "fase1-vendas-pct v0.1"
+VERSAO = "fase1-vendas-pct v0.2"
 
 AVISOS_RECONCILIACAO = [
+    "A planilha e REGENERADA a cada run (clear+write): NAO editar celulas aqui — toda entrada manual vive no HubSpot (ex.: DATA na Conta Movimentacao = campo data_do_aporte do deal). 'favor preencher' e placeholder do template",
     "Fonte de recurso = traducao aproximada de lei_principal (rotulos do Ivan sao texto livre)",
     "Grao difere: planilha do Ivan = 1 linha por aporte/parcela; gerada = 1 card por numero de projeto (parcelas somadas; ex. Asia 100k+400k = 1 linha 500k). A SOMA bate, o numero de linhas nao",
     "Comissao Jaque 4% calculada em TODOS os deals: o campo 'Nome do externo' nao existe no HubSpot, entao o XOR Jaque 4% x externo 3% (ex. John nos aportes Nu Bank) ainda nao e aplicavel — Jaque tende a aparecer acima do mestre e externo zerado",
@@ -225,22 +226,26 @@ def map_lei(lei):
 
 
 def build_record(r):
-    """1 dict do consolidado -> registro com a linha de 21 celulas + closedate."""
+    """1 dict do consolidado -> registro com a linha de 22 celulas + closedate."""
     d = parse_closedate(r["closedate"])
     def money(col):
         return parse_brl(r[col]) or 0.0
+    # K: data_do_aporte do Deal no HubSpot ("Conta Movimentacao", dominio do
+    # financeiro). Time do Ivan preenche no deal -> entra aqui no proximo run.
+    da = parse_closedate(r["data_aporte"])
+    conta_mov = fmt_date_br(da) if da else r["data_aporte"]
     out = [
         r["cliente"],                       # A Cliente
         map_lei(r["lei_principal"]),        # B Fonte de recurso (aproximacao)
         r["proponente"],                    # C Proponente
-        "",                                 # D Dados para Cobranca (manual)
+        "favor preencher",                  # D Dados para Cobranca (manual, template do Ivan)
         r["nome_projeto"],                  # E Projeto
         r["numero_projeto"],                # F Numero do projeto
         "",                                 # G No conta M (manual)
         "",                                 # H No conta C (manual)
         money("valor_bruto"),               # I Valor
         fmt_date_br(d),                     # J Data do aporte (= closedate)
-        "",                                 # K DATA na Conta Movimentacao (financeiro)
+        conta_mov,                          # K DATA na Conta Movimentacao (<- data_do_aporte do HubSpot)
         r["interno_externo"],               # L Interno ou externo?
         money("valor_efetivo_brada"),       # M Comissao BRADA
         money("liquido_brada"),             # N Liquido Brada
@@ -248,9 +253,10 @@ def build_record(r):
         money("comissao_jaque"),            # P Comissao Jaque 4%
         money("comissao_externo"),          # Q Comissao externo 3% (gap: sempre 0)
         "",                                 # R Nome do externo (campo inexistente no HubSpot)
-        r["deal_id"],                       # S tecnica
-        r["comissao_status"],               # T tecnica
-        r["closedate_status"],              # U tecnica
+        f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{r['deal_id']}",  # S link
+        r["deal_id"],                       # T tecnica
+        r["comissao_status"],               # U tecnica
+        r["closedate_status"],              # V tecnica
     ]
     return {"src": r, "date": d, "out": out}
 
@@ -427,7 +433,7 @@ def print_report(counts, records, cycle_records, cycle, sample, total, fonte_ts,
     for rec in records[:max_preview]:
         o = rec["out"]
         w(f"{o[0][:40]:40} | {o[8]:>14,.2f} | {o[9]:>10} | {o[11][:7]:7} | {o[12]:>11,.2f} | "
-          f"{o[14]:>9,.2f} | {o[15]:>9,.2f} | {o[19]}")
+          f"{o[14]:>9,.2f} | {o[15]:>9,.2f} | {o[20]}")
 
     w(f"\n--- Validacao da amostra (Casa do Alemao {fmt_brl(SAMPLE_VALOR)}, linha 2 do mestre do Ivan) ---")
     w(f"status: {sample['status']} (via {sample['via']})")
