@@ -1,0 +1,31 @@
+name: Reporting Financeiro Mensal (Fase 1 - Vendas%)
+
+on:
+  # Cron do dia 20 DESATIVADO ate sign-off do Ivan (1-2 ciclos de reconciliacao
+  # na planilha paralela Financeiro_Dados). Offset :30 deliberado: o sync.yml
+  # roda no minuto :00 (clear+write na aba consolidado); disparar em :00
+  # arrisca ler a aba pela metade.
+  # TODO ativar apos sign-off:
+  # schedule:
+  #   - cron: '30 12 20 * *'   # dia 20, 09:30 BRT
+  workflow_dispatch: {}
+
+jobs:
+  reporting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Gerar planilha financeira paralela (Vendas%)
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          REPORT_FINANCEIRO_SHEET_ID: ${{ secrets.REPORT_FINANCEIRO_SHEET_ID }}
+        run: python sheets_reporting_financeiro_mensal.py --write
