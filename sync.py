@@ -72,6 +72,11 @@ DEAL_PROPERTIES = [
     "status_contato",
     "email",      # custom Deal — e-mail do contato do incentivador (lista Rafaela 08/06)
     "telefone",   # custom Deal — telefone do contato (irmao de email)
+    # Sprint C/D (12/06): contato do PROPONENTE no card (distinto do incentivador acima).
+    # Properties criadas por ops/criar_props_contato_proponente.py (commit 72895cc).
+    "nome_contato_proponente",
+    "email_proponente",
+    "telefone_proponente",
     "lei_principal",  # criado em E1 - puxa do HubSpot, argmax vira fallback
     "linha_de_imposto_categoria",  # criado em E1 (IR/ICMS/ISS)
     "cnpj_do_incentivador",  # criado em E1-bis - CNPJ da filial/PDV; vazio = fallback Company.cnpj
@@ -757,6 +762,10 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
         "telefone": telefone_eff,
         # Contexto
         "nome_do_proponente": p.get("nome_do_proponente", ""),
+        # Sprint C/D: contato do proponente (distinto do email/telefone do incentivador acima)
+        "nome_contato_proponente": p.get("nome_contato_proponente", ""),
+        "email_proponente": p.get("email_proponente", ""),
+        "telefone_proponente": p.get("telefone_proponente", ""),
         "tipo_de_proponente": p.get("tipo_de_proponente", ""),  # 03/06: deriva interno/externo
         "nome_do_projeto": p.get("nome_do_projeto", ""),
         "numero_do_projeto": p.get("numero_do_projeto", ""),  # Sprint 1: chave de projeto
@@ -1738,6 +1747,11 @@ def build_consolidado_layer(enriched, stages=None):
             "empresa_canonica": empresa_canonica,  # Etapa 1: coluna no FIM (protege binding Looker)
             "tipo_de_proponente": tipo_prop,  # 03/06: classificação (grupo vs Externo)
             "valor_efetivo_brada": round(comissao_brada, 2),  # 03/06: "quanto" das views (= % efetivo Brada)
+            # Sprint D (12/06): contato do proponente no FIM do dict (3 ultimas colunas do consolidado;
+            # o header do consolidado e list(cons[0].keys()), entao a ordem de insercao = ordem da aba).
+            "nome_contato_proponente": e.get("nome_contato_proponente", ""),
+            "email_proponente": e.get("email_proponente", ""),
+            "telefone_proponente": e.get("telefone_proponente", ""),
         })
 
     # 2a passada: flag de overlap cross-pipeline (mesma projeto_key em >1 pipeline).

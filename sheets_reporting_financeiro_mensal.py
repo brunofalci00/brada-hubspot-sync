@@ -58,6 +58,8 @@ CONSOLIDADO_HEADER = [
     "comissao_externo", "comissao_status", "owner", "owner_status",
     "origem_lead", "lei_principal", "ano", "empresa_canonica",
     "tipo_de_proponente", "valor_efetivo_brada",
+    # Sprint D (12/06): contato do proponente, 3 ultimas colunas do consolidado.
+    "nome_contato_proponente", "email_proponente", "telefone_proponente",
 ]
 
 # Layout exato da aba "Controle de Vendas" do Ivan (A-R) + colunas tecnicas.
@@ -68,6 +70,9 @@ TARGET_HEADER = [
     "Comissão BRADA", "Líquido Brada", "Comissão Ivan 8%", "Comissão Jaque 4%",
     "Comissão externo 3%", "Nome do externo",
 ]
+# Sprint D: contato do proponente, inserido ENTRE o layout do Ivan (A-R) e as
+# colunas tecnicas. Vira colunas S/T/U; desloca link/deal_id/status pra V/W/X/Y.
+CONTATO_HEADER = ["Nome contato proponente", "Email proponente", "Telefone proponente"]
 TECH_HEADER = ["link_hubspot", "deal_id", "comissao_status", "closedate_status"]
 
 # Traducao lei_principal -> "Fonte de recurso" do Ivan. APROXIMACAO (os
@@ -82,7 +87,8 @@ LEI_FONTE_MAP = {
     "(sem lei preenchida)": "",
 }
 
-PESSOAS_FASE2 = ["Jéssica", "Daniele", "Rafaela", "Ricardo"]
+# Sprint D: Carina Ferreira substituiu Jéssica (09/06). Letícia NÃO entra (sem comissão).
+PESSOAS_FASE2 = ["Carina", "Daniele", "Rafaela", "Ricardo"]
 
 # Validacao: linha Casa do Alemao 46.567,65 (== linha 2 do mestre do Ivan,
 # conferida 12/06: 6.985,15 / 6.146,93 / 491,75 / 245,88).
@@ -104,14 +110,14 @@ REF_OFICIAL_0806 = 24_138_755.97
 # leitura no meio do clear viria vazia/parcial. Abaixo do piso, nao escreve.
 MIN_ROWS_GUARD = 500
 
-VERSAO = "fase1-vendas-pct v0.2"
+VERSAO = "fase1-vendas-pct v0.3"
 
 AVISOS_RECONCILIACAO = [
-    "A planilha e REGENERADA a cada run (clear+write): NAO editar celulas aqui — toda entrada manual vive no HubSpot (ex.: DATA na Conta Movimentacao = campo data_do_aporte do deal). 'favor preencher' e placeholder do template",
+    "5 colunas sao MANUAIS e PRESERVADAS por deal_id entre runs (Dados para Cobranca, No conta M, No conta C, Comissao externo 3%, Nome do externo): pode editar essas direto aqui que sobrevivem ao proximo run. As demais sao REGENERADAS (clear+write) e nao devem ser editadas (entrada vive no HubSpot, ex.: DATA na Conta Movimentacao = campo data_do_aporte do deal). 'favor preencher' e placeholder do template",
     "Fonte de recurso = traducao aproximada de lei_principal (rotulos do Ivan sao texto livre)",
     "Grao difere: planilha do Ivan = 1 linha por aporte/parcela; gerada = 1 card por numero de projeto (parcelas somadas; ex. Asia 100k+400k = 1 linha 500k). A SOMA bate, o numero de linhas nao",
-    "Comissao Jaque 4% calculada em TODOS os deals: o campo 'Nome do externo' nao existe no HubSpot, entao o XOR Jaque 4% x externo 3% (ex. John nos aportes Nu Bank) ainda nao e aplicavel — Jaque tende a aparecer acima do mestre e externo zerado",
-    "Data do aporte = closedate (decisao 08/06); o Ivan anota ISS como so o ano (fechamento+1) — divergencia esperada nas linhas ISS",
+    "Comissao externo 3% e Nome do externo agora sao MANUAIS (Luciana calcula o 3% do externo/finder; decisao Ivan 12/06). Jaque 4% segue AUTO em todos os deals: Jaque 4% e externo 3% podem coexistir ate a Luciana ajustar",
+    "Data do aporte = closedate (decisao 08/06); o Ivan anota ISS como so o ano (fechamento+1): divergencia esperada nas linhas ISS",
     "Linhas sem formula no mestre do Ivan (linha 11+) tem comissao em branco la; aqui todas sao calculadas",
 ]
 
@@ -226,7 +232,8 @@ def map_lei(lei):
 
 
 def build_record(r):
-    """1 dict do consolidado -> registro com a linha de 22 celulas + closedate."""
+    """1 dict do consolidado -> registro com a linha de 25 celulas + closedate.
+    Layout: TARGET (A-R, 18) + CONTATO (S-U, 3) + TECH (V-Y, 4)."""
     d = parse_closedate(r["closedate"])
     def money(col):
         return parse_brl(r[col]) or 0.0
@@ -238,11 +245,11 @@ def build_record(r):
         r["cliente"],                       # A Cliente
         map_lei(r["lei_principal"]),        # B Fonte de recurso (aproximacao)
         r["proponente"],                    # C Proponente
-        "favor preencher",                  # D Dados para Cobranca (manual, template do Ivan)
+        "favor preencher",                  # D Dados para Cobranca (MANUAL, preservado)
         r["nome_projeto"],                  # E Projeto
         r["numero_projeto"],                # F Numero do projeto
-        "",                                 # G No conta M (manual)
-        "",                                 # H No conta C (manual)
+        "",                                 # G No conta M (MANUAL, preservado + seed one-shot)
+        "",                                 # H No conta C (MANUAL, preservado + seed one-shot)
         money("valor_bruto"),               # I Valor
         fmt_date_br(d),                     # J Data do aporte (= closedate)
         conta_mov,                          # K DATA na Conta Movimentacao (<- data_do_aporte do HubSpot)
@@ -250,15 +257,111 @@ def build_record(r):
         money("valor_efetivo_brada"),       # M Comissao BRADA
         money("liquido_brada"),             # N Liquido Brada
         money("comissao_ivan"),             # O Comissao Ivan 8%
-        money("comissao_jaque"),            # P Comissao Jaque 4%
-        money("comissao_externo"),          # Q Comissao externo 3% (gap: sempre 0)
-        "",                                 # R Nome do externo (campo inexistente no HubSpot)
-        f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{r['deal_id']}",  # S link
-        r["deal_id"],                       # T tecnica
-        r["comissao_status"],               # U tecnica
-        r["closedate_status"],              # V tecnica
+        money("comissao_jaque"),            # P Comissao Jaque 4% (AUTO)
+        "",                                 # Q Comissao externo 3% (MANUAL, preservado - Luciana calcula; Block 3)
+        "",                                 # R Nome do externo (MANUAL, preservado)
+        r.get("nome_contato_proponente", ""),  # S Nome contato proponente (Sprint D)
+        r.get("email_proponente", ""),         # T Email proponente
+        r.get("telefone_proponente", ""),      # U Telefone proponente
+        f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{r['deal_id']}",  # V link
+        r["deal_id"],                       # W tecnica
+        r["comissao_status"],               # X tecnica
+        r["closedate_status"],              # Y tecnica
     ]
+    assert len(out) == len(TARGET_HEADER) + len(CONTATO_HEADER) + len(TECH_HEADER), \
+        f"build_record: out tem {len(out)} celulas, esperado {len(TARGET_HEADER) + len(CONTATO_HEADER) + len(TECH_HEADER)}"
     return {"src": r, "date": d, "out": out}
+
+
+# ===================================================
+# PRESERVACAO DE COLUNAS MANUAIS (Sprint D)
+# ===================================================
+# A planilha e regenerada (clear+write) a cada run. 5 colunas viram MANUAIS e
+# precisam sobreviver entre runs: lidas da aba atual POR NOME de header (a posicao
+# do deal_id muda quando inserimos as colunas de contato) e reinjetadas por deal_id.
+# Isto revoga a regra "nao editar celulas" da v0.2 SO pra essas 5 colunas.
+
+# nome do header (== TARGET_HEADER) -> indice no `out` da linha nova.
+MANUAL_COLS = {
+    "Dados para Cobrança": 3,
+    "Nº conta M": 6,
+    "Nº conta C": 7,
+    "Comissão externo 3%": 16,
+    "Nome do externo": 17,
+}
+EXTERNO_COL = "Comissão externo 3%"   # unica currency entre as manuais
+PLACEHOLDER_COBRANCA = "favor preencher"
+
+
+def build_preserved_map(values):
+    """values = get_all_values() da aba atual -> {deal_id: {nome_col: valor}}.
+    Crash-safe: sheet vazio / header sem deal_id -> {}. Regras:
+      - texto: preserva se nao-vazio (e != placeholder pra Dados para Cobranca);
+      - externo (currency): parse_brl, preserva SO se abs>0.005 e guarda FLOAT
+        (descarta o '0,00' auto historico -> Block 3 vale ja no 1o run).
+    Lookup estritamente por NOME (robusto a shift de layout entre v0.2 e v0.3)."""
+    if not values:
+        return {}
+    header = values[0]
+    try:
+        idx_deal = header.index("deal_id")
+    except ValueError:
+        return {}
+    col_idx = {name: header.index(name) for name in MANUAL_COLS if name in header}
+    preserved = {}
+    for row in values[1:]:
+        if idx_deal >= len(row):
+            continue
+        did = (row[idx_deal] or "").strip()
+        if not did:
+            continue
+        keep = {}
+        for name, i in col_idx.items():
+            raw = (row[i] if i < len(row) else "") or ""
+            raw = raw.strip()
+            if not raw:
+                continue
+            if name == EXTERNO_COL:
+                v = parse_brl(raw)
+                if v is None or abs(v) <= 0.005:
+                    continue
+                keep[name] = v
+            else:
+                if name == "Dados para Cobrança" and raw == PLACEHOLDER_COBRANCA:
+                    continue
+                keep[name] = raw
+        if keep:
+            preserved[did] = keep
+    return preserved
+
+
+def apply_preservation(records, preserved):
+    """Reinjeta os valores manuais preservados nas linhas novas, por deal_id.
+    Muta rec['out'] in place -> propaga pras abas cumulativa E de ciclo (mesmos dicts)."""
+    n = 0
+    for rec in records:
+        ov = preserved.get(rec["src"]["deal_id"])
+        if not ov:
+            continue
+        for name, val in ov.items():
+            rec["out"][MANUAL_COLS[name]] = val
+        n += 1
+    return n
+
+
+def read_preserved_manual(gc, report_id):
+    """Le a aba 'Controle de Vendas' atual da planilha de saida (read-only) e
+    monta o mapa de preservacao. Resiliente: qualquer falha -> {} (1o run, aba
+    inexistente, etc.) e o run continua (manuais apenas nao preservados)."""
+    try:
+        sh = gc.open_by_key(report_id)
+        ws = sh.worksheet("Controle de Vendas")
+        return build_preserved_map(ws.get_all_values())
+    except gspread.exceptions.WorksheetNotFound:
+        return {}
+    except Exception as e:
+        print(f"[aviso] preservacao: nao li a aba atual ({type(e).__name__}); manuais nao preservados neste run.")
+        return {}
 
 
 def sort_records(records):
@@ -339,11 +442,15 @@ def validate_total(records, excluidas):
 # ===================================================
 
 def build_totais(records, cycle_records, cycle):
+    def _ext(rec):
+        # Sprint D: externo (idx 16) virou MANUAL -> pode ser "" (vazio) ou float.
+        v = rec["out"][16]
+        return v if isinstance(v, (int, float)) else (parse_brl(v) or 0.0)
     def somas(recs):
         return {
             "Ivan": round(sum(rec["out"][14] for rec in recs), 2),
             "Jaque": round(sum(rec["out"][15] for rec in recs), 2),
-            "Externo": round(sum(rec["out"][16] for rec in recs), 2),
+            "Externo": round(sum(_ext(rec) for rec in recs), 2),
             "brada": round(sum(rec["out"][12] for rec in recs), 2),
             "valor": round(sum(rec["out"][8] for rec in recs), 2),
         }
@@ -360,9 +467,9 @@ def build_totais(records, cycle_records, cycle):
         ["Comissão BRADA total", acum["brada"], cic["brada"]],
         ["Valor bruto total", acum["valor"], cic["valor"]],
         ["", "", ""],
-        ["Fase 1: apenas stream Vendas%. Jéssica/Daniele/Rafaela/Ricardo "
+        ["Fase 1: apenas stream Vendas%. Carina/Daniele/Rafaela/Ricardo "
          "zerados até a Fase 2 (MATCH-fixo/Elaboração/Reuniões). "
-         "Externo zerado até existir o campo 'Nome do externo' no HubSpot.", "", ""],
+         "Externo 3% agora é manual (Luciana); Jaque 4% segue automático.", "", ""],
     ]
     return header, rows
 
@@ -433,7 +540,7 @@ def print_report(counts, records, cycle_records, cycle, sample, total, fonte_ts,
     for rec in records[:max_preview]:
         o = rec["out"]
         w(f"{o[0][:40]:40} | {o[8]:>14,.2f} | {o[9]:>10} | {o[11][:7]:7} | {o[12]:>11,.2f} | "
-          f"{o[14]:>9,.2f} | {o[15]:>9,.2f} | {o[20]}")
+          f"{o[14]:>9,.2f} | {o[15]:>9,.2f} | {o[23]}")  # o[23] = comissao_status (deslocou +3 com CONTATO)
 
     w(f"\n--- Validacao da amostra (Casa do Alemao {fmt_brl(SAMPLE_VALOR)}, linha 2 do mestre do Ivan) ---")
     w(f"status: {sample['status']} (via {sample['via']})")
@@ -490,7 +597,7 @@ def apply_currency_formats(ws, n_rows, col_letters):
 
 def write_report(gc, report_id, records, cycle_records, cycle, totais, meta):
     sh = gc.open_by_key(report_id)
-    full_header = TARGET_HEADER + TECH_HEADER
+    full_header = TARGET_HEADER + CONTATO_HEADER + TECH_HEADER
 
     ws = write_tab(sh, "Controle de Vendas", full_header, [rec["out"] for rec in records])
     apply_currency_formats(ws, len(records), CURRENCY_COL_LETTERS)
@@ -550,6 +657,12 @@ def main():
     rows, fonte_ts = load_consolidado(gc)
     incluidas, excluidas = split_vendas(rows)
     records = sort_records([build_record(r) for r in incluidas])
+    # Sprint D: preserva as 5 colunas manuais por deal_id (le a aba atual ANTES do
+    # clear+write). Roda tambem em dry-run, pro preview refletir o que sera escrito.
+    preserved = read_preserved_manual(gc, report_id)
+    n_preserved = apply_preservation(records, preserved)
+    print(f"[preservacao] {n_preserved} deal(s) com colunas manuais reinjetadas "
+          f"(de {len(preserved)} preservaveis no sheet atual)")
     cycle_records = cut_cycle(records, cycle)
 
     counts = compute_counts(rows, records, cycle_records)
