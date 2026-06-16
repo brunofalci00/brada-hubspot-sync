@@ -234,6 +234,21 @@ COMPANY_PROPERTIES = [
     "valor_lei_da_reciclagem",
     "valor_pronas",
     "valor_pronon",
+    # Diagnostico 2025 (16/06): separacao por ano. Os campos acima (unsuffixed) = ano
+    # CORRENTE (2026); estes *_2025 = ano anterior, preenchidos via planilha do Ivan.
+    # Grupo HubSpot `diagnostico_2025` (ver ops/criar_props_diagnostico_2025.py).
+    "valor_total_do_diagnostico_2025",
+    "valor_lei_rouanet_2025",
+    "valor_lei_do_esporte_2025",
+    "valor_lei_do_esporte_estadual_2025",
+    "valor_lei_do_bem_2025",
+    "valor_lei_da_cultura_2025",
+    "valor_lei_da_cultura_municipal_2025",
+    "valor_lei_da_crianca_e_do_adolescente_2025",
+    "valor_lei_do_idoso_2025",
+    "valor_lei_da_reciclagem_2025",
+    "valor_pronas_2025",
+    "valor_pronon_2025",
     # CRIAP (Sprint 0 / S0.4 — Caminho 1)
     "papel_criap",  # multi-select: patrocinador, parceiro_indicador
     "criap_total_aporte_2026",  # AUTO sync.py via compute_criap_rollups
@@ -877,6 +892,20 @@ def enrich_company(company, num_deals_by_cid, flags_by_cid=None):
         "valor_lei_da_reciclagem": num(p.get("valor_lei_da_reciclagem")),
         "valor_pronas": num(p.get("valor_pronas")),
         "valor_pronon": num(p.get("valor_pronon")),
+        # Diagnostico 2025 (16/06): ano anterior, no raw_companies pra dashboards de
+        # referencia/comparativo. Unsuffixed acima = ano corrente (2026).
+        "valor_total_do_diagnostico_2025": num(p.get("valor_total_do_diagnostico_2025")),
+        "valor_lei_rouanet_2025": num(p.get("valor_lei_rouanet_2025")),
+        "valor_lei_do_esporte_2025": num(p.get("valor_lei_do_esporte_2025")),
+        "valor_lei_do_esporte_estadual_2025": num(p.get("valor_lei_do_esporte_estadual_2025")),
+        "valor_lei_do_bem_2025": num(p.get("valor_lei_do_bem_2025")),
+        "valor_lei_da_cultura_2025": num(p.get("valor_lei_da_cultura_2025")),
+        "valor_lei_da_cultura_municipal_2025": num(p.get("valor_lei_da_cultura_municipal_2025")),
+        "valor_lei_da_crianca_e_do_adolescente_2025": num(p.get("valor_lei_da_crianca_e_do_adolescente_2025")),
+        "valor_lei_do_idoso_2025": num(p.get("valor_lei_do_idoso_2025")),
+        "valor_lei_da_reciclagem_2025": num(p.get("valor_lei_da_reciclagem_2025")),
+        "valor_pronas_2025": num(p.get("valor_pronas_2025")),
+        "valor_pronon_2025": num(p.get("valor_pronon_2025")),
         # Flags de estado do pipeline (1 se Company tem >=1 deal naquele estado).
         # Usadas no Hero "PROJETADO" pra filtrar Companies com pipeline ativo.
         "tem_deal_ativo": 1 if flags.get("ativo", 0) > 0 else 0,
