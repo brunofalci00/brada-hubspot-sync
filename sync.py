@@ -1783,14 +1783,29 @@ def build_consolidado_layer(enriched, stages=None):
             "telefone_proponente": e.get("telefone_proponente", ""),
         })
 
-    # 2a passada: flag de overlap cross-pipeline (mesma projeto_key em >1 pipeline).
-    pipelines_por_projeto = defaultdict(set)
+    # 2a passada: flag de overlap cross-pipeline = MESMA CAPTACAO registrada nos dois
+    # lados (incentivador/Match + proponente/CRIAPE), chave (empresa_canonica,
+    # valor_vendido) em >1 pipeline. valor_vendido>0 so em won, entao ja restringe a won.
+    # Antes era por projeto_key (nome): dava (a) falso POSITIVO quando clientes distintos
+    # compartilhavam um nome de iniciativa (ex.: "Conectados" em N CRIAPEs diferentes) e
+    # (b) falso NEGATIVO quando a mesma captacao tinha nomes diferentes nos dois lados
+    # (ex.: RMED "Biblioteca Para Todos" no CRIAPE x "Con. do Bem + Biblioteca" no Match).
+    # Analise 18/06: 3 pares reais (RMED 204.999, SEEL 50.428, Real Pax 39.932) = R$295k
+    # (~1% do total). Marca os DOIS lados do par; QUAL lado deduplicar (incentivador x
+    # proponente) e' decisao de negocio pendente (Ivan) — ver Visao_Gerencial / Spec.
+    def _cap_key(r):
+        cn = (r.get("empresa_canonica") or "").strip()
+        v = round(float(r.get("valor_vendido") or 0))
+        return (cn, v) if (cn and v > 0) else None
+
+    pipelines_por_captacao = defaultdict(set)
     for r in rows:
-        if r["projeto_key"]:
-            pipelines_por_projeto[r["projeto_key"]].add(r["pipeline"])
+        k = _cap_key(r)
+        if k:
+            pipelines_por_captacao[k].add(r["pipeline"])
     for r in rows:
-        if r["projeto_key"] and len(pipelines_por_projeto[r["projeto_key"]]) > 1:
-            r["tem_overlap_projeto"] = 1
+        k = _cap_key(r)
+        r["tem_overlap_projeto"] = 1 if (k and len(pipelines_por_captacao[k]) > 1) else 0
 
     return rows
 
