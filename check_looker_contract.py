@@ -50,6 +50,20 @@ CONTRACTS = [
         "date_dims": ["data_criacao", "data_fechamento"],
         "min_fill": {"data_criacao": 0.80},
     },
+    {
+        # Backbone das views Vitor (Visao Gerencial) + CRIAPE. Pega rename/remocao de
+        # coluna que essas paginas amarram. Sem date_dims: a view usa `ano`/`mes_ano`
+        # (texto), nao Date Range Dimension (ver PLAYBOOK_datas_sheets_looker).
+        "label": "Gerencial Vitor / CRIAPE (consolidado)",
+        "spreadsheet_id": SPREADSHEET_ID,
+        "tab": "consolidado",
+        "required": [
+            "deal_id", "cliente", "produto", "nome_projeto", "valor_vendido",
+            "valor_efetivo_brada", "origem_lead", "won_ganho", "tem_overlap_projeto",
+            "closedate", "closedate_status", "ano", "empresa_canonica",
+        ],
+        "date_dims": [],
+    },
 ]
 
 YMD = re.compile(r"^\d{4}-\d{2}-\d{2}$")
