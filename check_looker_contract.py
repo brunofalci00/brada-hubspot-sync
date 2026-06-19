@@ -61,6 +61,7 @@ CONTRACTS = [
             "deal_id", "cliente", "produto", "nome_projeto", "valor_vendido",
             "valor_efetivo_brada", "origem_lead", "won_ganho", "tem_overlap_projeto",
             "closedate", "closedate_status", "ano", "empresa_canonica",
+            "valor_projetado_ativo",
         ],
         "date_dims": [],
     },

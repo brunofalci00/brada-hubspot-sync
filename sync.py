@@ -1781,6 +1781,10 @@ def build_consolidado_layer(enriched, stages=None):
             "nome_contato_proponente": e.get("nome_contato_proponente", ""),
             "email_proponente": e.get("email_proponente", ""),
             "telefone_proponente": e.get("telefone_proponente", ""),
+            # R1 Fonte Unica de Lucro: projetado do pipeline ativo no FIM do dict
+            # (protege binding Looker + guard exact-match do financeiro). Round(2) =
+            # mesmo render que raw_metas_anuais (write_performance_sheet ~2475).
+            "valor_projetado_ativo": round(float(e.get("valor_projetado_ativo", 0) or 0), 2),
         })
 
     # 2a passada: flag de overlap cross-pipeline = MESMA CAPTACAO registrada nos dois

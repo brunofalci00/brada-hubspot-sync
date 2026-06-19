@@ -60,6 +60,8 @@ CONSOLIDADO_HEADER = [
     "tipo_de_proponente", "valor_efetivo_brada",
     # Sprint D (12/06): contato do proponente, 3 ultimas colunas do consolidado.
     "nome_contato_proponente", "email_proponente", "telefone_proponente",
+    # R1: nova ultima coluna do consolidado (lockstep com sync.py build_consolidado_layer).
+    "valor_projetado_ativo",
 ]
 
 # Layout exato da aba "Controle de Vendas" do Ivan (A-R) + colunas tecnicas.
