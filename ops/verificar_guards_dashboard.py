@@ -68,8 +68,8 @@ EXP_POR_PRODUTO = {
 EXP_EFETIVO_POSITIVO = 70
 # Funil "passou pela etapa em 2026" (limpo da carga inicial do CRM). SOFT: varia
 # semana a semana com o pipeline. Semear com o valor real do 1o run pos-deploy.
-EXP_PASSOU_REUNIAO_2026 = 68    # ~147 bruto menos a carga 02/01 (57) + 29/01 (22)
-EXP_PASSOU_DIAG_2026 = 82       # diagnostico nao tem rajada de carga
+EXP_PASSOU_REUNIAO_2026 = 64    # Regra A (rajada + import-direto-na-etapa); ~147 bruto. Re-semear pos-deploy.
+EXP_PASSOU_DIAG_2026 = 78       # Regra A: 82 menos ~4 artefatos import-direto. Re-semear pos-deploy.
 
 
 def num(x):
@@ -205,6 +205,36 @@ def main():
     else:
         print("\n-- raw_deals (funil REAL) --")
         info("Funil passou-pela-etapa", "colunas data_entrou_* ausentes (sync do funil ainda nao deployado)")
+
+    # ---------- raw_funil_eventos: funil completo date-driven (Tarefa 6) ----------
+    # Aba longa 1 linha por (deal x etapa). Confirma que reuniao/diag batem com os
+    # scorecards das colunas wide (mesma Regra A) e imprime o funil limpo por etapa.
+    print("\n-- raw_funil_eventos (funil completo; em_carga=0 + 2026; COUNT_DISTINCT deal) --")
+    try:
+        ev_idx, ev = read_unformatted(sh.worksheet("raw_funil_eventos"))
+    except Exception:
+        ev_idx, ev = None, None
+    if ev_idx is None:
+        info("Aba raw_funil_eventos", "ausente (sync do funil de eventos ainda nao deployado)")
+    else:
+        from collections import defaultdict as _dd
+
+        def ev_get(r, c):
+            i = ev_idx.get(c)
+            return r[i] if i is not None and i < len(r) else ""
+        por_etapa = _dd(set)  # (pipeline, ordem, stage) -> set(deal_id) [COUNT_DISTINCT]
+        for r in ev:
+            if str(ev_get(r, "data_entrada"))[:4] == ANO_ALVO and not truthy(ev_get(r, "em_carga")):
+                key = (str(ev_get(r, "pipeline_nome")), num(ev_get(r, "stage_ordem")), str(ev_get(r, "stage_nome")))
+                por_etapa[key].add(str(ev_get(r, "deal_id")))
+        reuniao_ev = sum(len(v) for (p, o, s), v in por_etapa.items() if STAGE_REUNIAO in s.casefold())
+        diag_ev = sum(len(v) for (p, o, s), v in por_etapa.items() if STAGE_DIAGNOSTICO in s.casefold())
+        guard("Funil reuniao 2026 (event-tab, limpo) ~drift", reuniao_ev, EXP_PASSOU_REUNIAO_2026, hard=False)
+        guard("Funil diagnostico 2026 (event-tab, limpo) ~drift", diag_ev, EXP_PASSOU_DIAG_2026, hard=False)
+        info("Consistencia", "event-tab deve bater com o scorecard wide (mesma Regra A)")
+        print("    funil limpo por etapa (deals distintos, 2026, em_carga=0):")
+        for (p, o, s), v in sorted(por_etapa.items()):
+            print(f"      {p:13} {s[:36]:36} {len(v)}")
 
     # ---------- raw_metas_anuais: cards de valor ----------
     rm_idx, rm = read_unformatted(sh.worksheet("raw_metas_anuais"))

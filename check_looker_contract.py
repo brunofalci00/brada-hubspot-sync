@@ -68,6 +68,20 @@ CONTRACTS = [
         ],
         "date_dims": [],
     },
+    {
+        # Funil de eventos (21/06): 1 linha por (deal x etapa em que entrou). O Looker
+        # monta o funil de barras date-filtravel (dim=stage_nome, metric=COUNT_DISTINCT
+        # deal_id, periodo=data_entrada). data_entrada e' densa (todo evento tem data).
+        "label": "Funil eventos (raw_funil_eventos)",
+        "spreadsheet_id": SPREADSHEET_ID,
+        "tab": "raw_funil_eventos",
+        "required": [
+            "deal_id", "pipeline_nome", "stage_nome", "stage_ordem",
+            "data_entrada", "produto", "executivo_nome", "em_carga",
+        ],
+        "date_dims": ["data_entrada"],
+        "min_fill": {"data_entrada": 0.95},
+    },
 ]
 
 YMD = re.compile(r"^\d{4}-\d{2}-\d{2}$")
