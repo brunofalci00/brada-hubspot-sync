@@ -65,6 +65,8 @@ DEAL_PROPERTIES = [
     "closedate",
     "hs_lastmodifieddate",
     "hs_v2_date_entered_current_stage",  # v2 preenche pra deals criados no stage (v1 só quando move)
+    "hs_v2_date_entered_1246562476",  # entrada em "[EV] - Reunião Agendada" (funil; ver STAGE_ENTRADA_REUNIAO)
+    "hs_v2_date_entered_1246562478",  # entrada em "[EV] - Diagnóstico" (funil; ver STAGE_ENTRADA_DIAGNOSTICO)
     "e_o_primeiro_match",
     "produto",
     "valor_oportunidade",
@@ -657,6 +659,9 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
 
     entered_stage = parse_dt(p.get("hs_v2_date_entered_current_stage"))
     dias_no_stage = (now - entered_stage).days if entered_stage else None
+    # Funil: data de entrada em Reunião/Diagnóstico (persiste apos sair do stage).
+    entrou_reuniao = parse_dt(p.get(f"hs_v2_date_entered_{STAGE_ENTRADA_REUNIAO}"))
+    entrou_diagnostico = parse_dt(p.get(f"hs_v2_date_entered_{STAGE_ENTRADA_DIAGNOSTICO}"))
 
     company_id = deal_to_company.get(deal_id)
     comp = companies.get(str(company_id), {}) if company_id else {}
@@ -806,6 +811,13 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
         "data_fechamento": closedate.strftime("%Y-%m-%d") if closedate else "",
         "dias_desde_criacao": dias_desde_criacao if dias_desde_criacao is not None else "",
         "dias_no_stage_atual": dias_no_stage if dias_no_stage is not None else "",
+        # Funil: data de ENTRADA na etapa (esparsa -> Texto no Looker -> PARSE_DATE
+        # calc field, NUNCA a coluna crua). Flag *_em_carga = 0 aqui; setado na 2a
+        # passada do main() (precisa visao global pra detectar a rajada de import).
+        "data_entrou_reuniao": entrou_reuniao.strftime("%Y-%m-%d") if entrou_reuniao else "",
+        "data_entrou_diagnostico": entrou_diagnostico.strftime("%Y-%m-%d") if entrou_diagnostico else "",
+        "entrou_reuniao_em_carga": 0,
+        "entrou_diagnostico_em_carga": 0,
         # Company
         "company_id": company_id or "",
         "company_name": comp.get("name", ""),
@@ -929,6 +941,27 @@ VENDIDO_POS_VENDA = POS_VENDA_STAGES | PROPONENTE_POS_VENDA_STAGES
 # 1253324968 = Ganho Incentivador, 1246571362 = Fechado Proponente (closed-won dos dois pipelines)
 STAGES_GANHO = {"1253324968", "1246571362"} | VENDIDO_POS_VENDA
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
+
+# === Funil de entrada por stage (hs_v2_date_entered_<stageId>) ===
+# O timestamp de entrada no stage PERSISTE depois do deal sair -> permite contar
+# quem PASSOU pela etapa (nao so quem esta nela agora). Pipeline Incentivador.
+# IDs imutaveis (labels sao editaveis -> nao derivar por nome). Tambem listados
+# literais em DEAL_PROPERTIES (necessario la). Investigacao 21/06.
+STAGE_ENTRADA_REUNIAO = "1246562476"      # "[EV] - Reunião Agendada"
+STAGE_ENTRADA_DIAGNOSTICO = "1246562478"  # "[EV] - Diagnóstico"
+# Limpeza de carga: a carga inicial do CRM carimbou dezenas de deals no MESMO dia
+# (reuniao 02/01=57, 29/01=22). Organico e' ~7-18/MES, entao um DIA com >=N
+# entradas no mesmo stage e' import, nao reuniao real. Knob: subir se o volume
+# organico crescer. Diagnostico nao tem rajada (dia mais cheio 13 < 20).
+BURST_MIN_CARGA_DIA = 20
+
+
+def dias_em_carga(dias, burst_min=BURST_MIN_CARGA_DIA):
+    """Lista de dias (AAAA-MM-DD) de entrada num stage -> set de dias com
+    >= burst_min entradas (carga inicial do CRM, nao atividade organica).
+    Vazios sao ignorados. Puro/offline (testavel sem rede)."""
+    counts = Counter(d for d in dias if d)
+    return {dia for dia, n in counts.items() if n >= burst_min}
 
 # CRIAPE (Sprint 0 / S0.4 14/05 — Caminho 1 reuso pipeline Proponente)
 # F0.1 20/05: value padronizado de "CRIAP" para "CRIAPE" (label sempre foi "CRIAPE").
@@ -2533,6 +2566,19 @@ def main():
                company_to_contacts=company_to_contacts, contacts=contacts)
         for d in deals
     ]
+
+    # Funil (21/06): 2a passada — marca *_em_carga nos deals cuja entrada na etapa
+    # caiu num dia de carga inicial do CRM (rajada >= BURST_MIN_CARGA_DIA/dia), pro
+    # Looker contar so quem passou de verdade. Usa o dia ja derivado (data_entrou_*).
+    carga_reuniao = dias_em_carga([e["data_entrou_reuniao"] for e in enriched])
+    carga_diag = dias_em_carga([e["data_entrou_diagnostico"] for e in enriched])
+    for e in enriched:
+        if e["data_entrou_reuniao"] in carga_reuniao:
+            e["entrou_reuniao_em_carga"] = 1
+        if e["data_entrou_diagnostico"] in carga_diag:
+            e["entrou_diagnostico_em_carga"] = 1
+    print(f"Funil carga (>= {BURST_MIN_CARGA_DIA}/dia no mesmo stage): "
+          f"reuniao={sorted(carga_reuniao)} diag={sorted(carga_diag)}")
 
     # Fase 9 (30/04): segunda passada — preenche dup_count/severidade/keep_suggestion
     # baseado em visao global de todos deals enriched. Counter eh O(N), trivial.

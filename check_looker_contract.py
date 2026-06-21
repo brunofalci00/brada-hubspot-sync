@@ -47,7 +47,10 @@ CONTRACTS = [
             "company_state", "motivo_de_perda", "executivo_nome", "trabalhado_por",
             "origem_lead", "createdate", "closedate",
         ],
-        "date_dims": ["data_criacao", "data_fechamento"],
+        "date_dims": ["data_criacao", "data_fechamento",
+                      "data_entrou_reuniao", "data_entrou_diagnostico"],
+        # data_entrou_* sao ESPARSAS (so deals que passaram pela etapa) -> sem min_fill,
+        # so checa formato AAAA-MM-DD nos nao-vazios (insumo do PARSE_DATE no Looker).
         "min_fill": {"data_criacao": 0.80},
     },
     {
