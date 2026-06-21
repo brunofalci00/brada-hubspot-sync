@@ -1006,17 +1006,19 @@ def build_funil_eventos_layer(deals, enriched, stages):
         props = d.get("properties", {}) or {}
         source = props.get("hs_object_source", "") or ""
         data_criacao = e.get("data_criacao", "")
-        deal_pipe = e.get("pipeline_id", "")
         for sid, sinfo in stage_items:
-            # so etapas do proprio pipeline do deal (defensivo; cross-pipeline e' nulo)
-            if sinfo.get("pipeline_id", "") != deal_pipe:
-                continue
+            # 1 evento por etapa em que o deal ENTROU (data nao-nula). SEM filtro de
+            # pipeline atual: um deal que mudou de pipeline (ex.: virou CRIAPE) mantem
+            # as datas de entrada das etapas antigas -> conta na etapa que passou. O
+            # null-skip cobre quem nunca entrou (data nula). Rotulo = pipeline da
+            # ETAPA (sinfo), nao o atual do deal -> bate com os scorecards wide (que
+            # leem a property direta, sem olhar o pipeline atual).
             dt = _parse_hs_datetime(props.get(f"hs_v2_date_entered_{sid}"))
             if dt is None:
                 continue
             eventos.append({
                 "deal_id": deal_id,
-                "pipeline_nome": e.get("pipeline_nome", ""),
+                "pipeline_nome": sinfo.get("pipeline_nome", ""),
                 "stage_id": sid,
                 "stage_nome": sinfo.get("nome", ""),
                 "stage_ordem": sinfo.get("ordem", 999),
