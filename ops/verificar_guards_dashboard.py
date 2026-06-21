@@ -66,6 +66,10 @@ EXP_POR_PRODUTO = {
     "Elaboração": (8, 10_000.00),
 }
 EXP_EFETIVO_POSITIVO = 70
+# Funil "passou pela etapa em 2026" (limpo da carga inicial do CRM). SOFT: varia
+# semana a semana com o pipeline. Semear com o valor real do 1o run pos-deploy.
+EXP_PASSOU_REUNIAO_2026 = 68    # ~147 bruto menos a carga 02/01 (57) + 29/01 (22)
+EXP_PASSOU_DIAG_2026 = 82       # diagnostico nao tem rajada de carga
 
 
 def num(x):
@@ -179,6 +183,28 @@ def main():
     guard("Em reuniao agora (e_ativo=1 + Reuniao Agendada) ~snapshot", len(reuniao), EXP_REUNIAO, hard=False)
     guard("Em diagnostico agora (e_ativo=1 + Diagnostico) ~snapshot", len(diagnostico), EXP_DIAGNOSTICO, hard=False)
     guard("Match won 2026 (e_ganho=1, produto=Match, ano=2026)", len(match_won), EXP_MATCH_WON)
+
+    # ---------- funil REAL: passou pela etapa em 2026 (limpo da carga inicial) ----------
+    # Colunas novas (sync do funil, 21/06). Pre-deploy elas nao existem -> pula com aviso.
+    if "data_entrou_reuniao" in rd_idx and "entrou_reuniao_em_carga" in rd_idx:
+        def passou(data_col, carga_col):
+            # data_entrou_* sai AAAA-MM-DD; ano = 4 primeiros chars (NAO usar ano_de,
+            # que e' p/ campo de ano puro). Exclui quem caiu na carga inicial.
+            return [r for r in rd
+                    if str(rd_get(r, data_col))[:4] == ANO_ALVO
+                    and not truthy(rd_get(r, carga_col))]
+        passou_r = passou("data_entrou_reuniao", "entrou_reuniao_em_carga")
+        passou_d = passou("data_entrou_diagnostico", "entrou_diagnostico_em_carga")
+        bruto_r = sum(1 for r in rd if str(rd_get(r, "data_entrou_reuniao"))[:4] == ANO_ALVO)
+        bruto_d = sum(1 for r in rd if str(rd_get(r, "data_entrou_diagnostico"))[:4] == ANO_ALVO)
+        print("\n-- raw_deals (funil REAL: passou pela ETAPA em 2026, limpo da carga) --")
+        guard("Passaram pela etapa de reuniao 2026 (limpo) ~drift", len(passou_r), EXP_PASSOU_REUNIAO_2026, hard=False)
+        info("Reuniao 2026 bruto vs carga", f"{bruto_r} bruto, {bruto_r - len(passou_r)} marcados carga")
+        guard("Passaram por diagnostico 2026 (limpo) ~drift", len(passou_d), EXP_PASSOU_DIAG_2026, hard=False)
+        info("Diagnostico 2026 bruto vs carga", f"{bruto_d} bruto, {bruto_d - len(passou_d)} marcados carga")
+    else:
+        print("\n-- raw_deals (funil REAL) --")
+        info("Funil passou-pela-etapa", "colunas data_entrou_* ausentes (sync do funil ainda nao deployado)")
 
     # ---------- raw_metas_anuais: cards de valor ----------
     rm_idx, rm = read_unformatted(sh.worksheet("raw_metas_anuais"))
