@@ -1,7 +1,8 @@
 """Testes PUROS (offline, sem CRM/Sheets) da camada raw_funil_eventos do sync.py
 (Tarefa 6, 21/06): build_funil_eventos_layer + evento_em_carga (Regra A).
 
-  - 1 linha por (deal x etapa em que entrou), filtro cross-pipeline + null-skip.
+  - 1 linha por (deal x etapa em que entrou; null-skip; conta switchers de pipeline,
+    rotulados pelo pipeline da ETAPA).
   - Regra A de carga: dia de rajada (>=20/etapa) OU migrado importado-direto-na-etapa
     (source IMPORT/INTEGRATION e data_entrada == data_criacao); mantem move organico.
 
@@ -135,11 +136,14 @@ def test_carga_e_por_etapa():
     check(len(ev) == 24 and all(e["em_carga"] == 0 for e in ev), "12/etapa < 20 -> nenhum carga (nao soma cross-stage)")
 
 
-def test_cross_pipeline_skip():
-    print("\n[9] null-skip cross-pipeline: deal Proponente ignora etapa de outro pipeline")
-    deal = _deal("P1", source="CRM_UI", pg="2026-03-10", r="2026-03-09")  # 'r' e' do Incentivador (stray)
+def test_switcher_dois_pipelines():
+    print("\n[9] deal que mudou de pipeline gera evento em CADA etapa que entrou (rotulo = pipeline da etapa)")
+    deal = _deal("P1", source="CRM_UI", pg="2026-03-10", r="2026-03-09")  # entrou reuniao (Incentivador) E ganho (Proponente)
     ev = _build([deal], [_enr("P1", pipeline_id="839644419", pipeline_nome="Proponente", produto="CRIAPE")])
-    check(len(ev) == 1 and ev[0]["stage_id"] == "1246571362", "so a etapa do proprio pipeline (ignora stray)")
+    check(len(ev) == 2, f"2 etapas em que entrou -> 2 eventos (got {len(ev)})")
+    by_stage = {e["stage_id"]: e for e in ev}
+    check(by_stage.get("1246562476", {}).get("pipeline_nome") == "Incentivador", "reuniao rotulada pelo pipeline da ETAPA (Incentivador)")
+    check(by_stage.get("1246571362", {}).get("pipeline_nome") == "Proponente", "ganho rotulado Proponente")
 
 
 def test_bordas():
@@ -162,7 +166,7 @@ def main():
     test_regra_a_nativo_nao_e_carga()
     test_rajada_por_dia()
     test_carga_e_por_etapa()
-    test_cross_pipeline_skip()
+    test_switcher_dois_pipelines()
     test_bordas()
     print(f"\n===== {_pass} PASS / {_fail} FAIL =====")
     sys.exit(1 if _fail else 0)
