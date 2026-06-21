@@ -64,6 +64,7 @@ DEAL_PROPERTIES = [
     "createdate",
     "closedate",
     "hs_lastmodifieddate",
+    "hs_object_source",  # IMPORT/INTEGRATION/CRM_UI/CLONE_OBJECTS — Regra A de carga do funil
     "hs_v2_date_entered_current_stage",  # v2 preenche pra deals criados no stage (v1 só quando move)
     "hs_v2_date_entered_1246562476",  # entrada em "[EV] - Reunião Agendada" (funil; ver STAGE_ENTRADA_REUNIAO)
     "hs_v2_date_entered_1246562478",  # entrada em "[EV] - Diagnóstico" (funil; ver STAGE_ENTRADA_DIAGNOSTICO)
@@ -335,14 +336,18 @@ def load_stages():
     return stages
 
 
-def fetch_all_deals():
-    """Puxa todos os deals via Search API paginada."""
+def fetch_all_deals(properties=None):
+    """Puxa todos os deals via Search API paginada.
+    properties: lista a pedir (default DEAL_PROPERTIES). O funil de eventos passa
+    DEAL_PROPERTIES + os hs_v2_date_entered_<stageId> dos 2 pipelines."""
+    if properties is None:
+        properties = DEAL_PROPERTIES
     deals = []
     after = None
     while True:
         body = {
             "limit": 100,
-            "properties": DEAL_PROPERTIES,
+            "properties": properties,
             "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}],
         }
         if after:
@@ -962,6 +967,86 @@ def dias_em_carga(dias, burst_min=BURST_MIN_CARGA_DIA):
     Vazios sao ignorados. Puro/offline (testavel sem rede)."""
     counts = Counter(d for d in dias if d)
     return {dia for dia, n in counts.items() if n >= burst_min}
+
+
+# Regra A de carga (21/06): uniao de (rajada de import por dia) + (deal migrado
+# importado DIRETO na etapa). Separa artefato de import de movimento organico real.
+CARGA_SOURCES = {"IMPORT", "INTEGRATION"}
+
+
+def evento_em_carga(source, data_entrada, data_criacao, carga_dias):
+    """True se a entrada na etapa for carga (artefato), nao atividade real:
+    (a) data_entrada caiu num dia de rajada da etapa (>= BURST_MIN_CARGA_DIA), OU
+    (b) deal migrado importado DIRETO na etapa (source de carga e entry == create).
+    Mantem moves organicos de migrados (entry > create). Puro/offline."""
+    if not data_entrada:
+        return False
+    return (data_entrada in carga_dias
+            or (source in CARGA_SOURCES and data_entrada == data_criacao))
+
+
+def build_funil_eventos_layer(deals, enriched, stages):
+    """Aba longa raw_funil_eventos: 1 linha por (deal x etapa em que o deal entrou),
+    com a data de entrada (hs_v2_date_entered_<stageId>). Permite no Looker um funil
+    de barras (dim=stage_nome, metric=COUNT_DISTINCT(deal_id)) filtravel por UM
+    controle de data (data_entrada). Cobre os 2 pipelines. Carga marcada por evento
+    (Regra A, mesma de evento_em_carga -> bate com os scorecards das colunas wide)."""
+    enr_by_id = {e["deal_id"]: e for e in enriched}
+    stage_items = sorted(
+        stages.items(),
+        key=lambda kv: (kv[1].get("pipeline_id", ""), kv[1].get("ordem", 999)),
+    )
+    eventos = []
+    meta = []  # paralelo a eventos: (source, data_criacao) p/ a Regra A de carga
+    for d in deals:
+        deal_id = d.get("id")
+        e = enr_by_id.get(deal_id)
+        if not e:
+            continue
+        props = d.get("properties", {}) or {}
+        source = props.get("hs_object_source", "") or ""
+        data_criacao = e.get("data_criacao", "")
+        deal_pipe = e.get("pipeline_id", "")
+        for sid, sinfo in stage_items:
+            # so etapas do proprio pipeline do deal (defensivo; cross-pipeline e' nulo)
+            if sinfo.get("pipeline_id", "") != deal_pipe:
+                continue
+            dt = _parse_hs_datetime(props.get(f"hs_v2_date_entered_{sid}"))
+            if dt is None:
+                continue
+            eventos.append({
+                "deal_id": deal_id,
+                "pipeline_nome": e.get("pipeline_nome", ""),
+                "stage_id": sid,
+                "stage_nome": sinfo.get("nome", ""),
+                "stage_ordem": sinfo.get("ordem", 999),
+                "data_entrada": dt.strftime("%Y-%m-%d"),
+                "produto": e.get("produto", ""),
+                "executivo_nome": e.get("executivo_nome", ""),
+                "tipo_de_proponente": e.get("tipo_de_proponente", ""),
+                "valor_do_aporte": e.get("valor_do_aporte", 0),
+                "em_carga": 0,
+            })
+            meta.append((source, data_criacao))
+    # Carga POR ETAPA (Regra A)
+    por_stage = defaultdict(list)
+    for ev in eventos:
+        por_stage[ev["stage_id"]].append(ev["data_entrada"])
+    carga_por_stage = {sid: dias_em_carga(datas) for sid, datas in por_stage.items()}
+    for ev, (src, dc) in zip(eventos, meta):
+        if evento_em_carga(src, ev["data_entrada"], dc,
+                           carga_por_stage.get(ev["stage_id"], set())):
+            ev["em_carga"] = 1
+    # transparencia: total/carga por etapa (ordenado por pipeline, ordem)
+    resumo = defaultdict(lambda: [0, 0])
+    for ev in eventos:
+        resumo[(ev["pipeline_nome"], ev["stage_ordem"], ev["stage_nome"])][0] += 1
+        resumo[(ev["pipeline_nome"], ev["stage_ordem"], ev["stage_nome"])][1] += ev["em_carga"]
+    print(f"Funil eventos: {len(eventos)} linhas (total/carga por etapa):")
+    for (pipe, _o, st), (tot, carga) in sorted(resumo.items()):
+        print(f"  {pipe} / {st}: {tot} / {carga} carga")
+    return eventos
+
 
 # CRIAPE (Sprint 0 / S0.4 14/05 — Caminho 1 reuso pipeline Proponente)
 # F0.1 20/05: value padronizado de "CRIAP" para "CRIAPE" (label sempre foi "CRIAPE").
@@ -2541,7 +2626,12 @@ def main():
 
     stages = load_stages()
     owners = load_owner_map()
-    deals = fetch_all_deals()
+    # Funil eventos: pede tambem hs_v2_date_entered_<stageId> de TODAS as etapas dos
+    # 2 pipelines (dinamico do load_stages; os ja em DEAL_PROPERTIES sao deduplicados).
+    date_props = sorted({f"hs_v2_date_entered_{sid}" for sid in stages})
+    deals = fetch_all_deals(
+        properties=DEAL_PROPERTIES + [p for p in date_props if p not in DEAL_PROPERTIES]
+    )
     if not deals:
         print("Nenhum deal encontrado. Abortando.")
         return
@@ -2567,18 +2657,23 @@ def main():
         for d in deals
     ]
 
-    # Funil (21/06): 2a passada — marca *_em_carga nos deals cuja entrada na etapa
-    # caiu num dia de carga inicial do CRM (rajada >= BURST_MIN_CARGA_DIA/dia), pro
-    # Looker contar so quem passou de verdade. Usa o dia ja derivado (data_entrou_*).
+    # Funil (21/06; Regra A 21/06): 2a passada — marca *_em_carga. Regra A = dia de
+    # rajada (>= BURST_MIN_CARGA_DIA) OU deal migrado importado DIRETO na etapa
+    # (source de carga e data_entrada == data_criacao). Mantem moves organicos de
+    # migrados. MESMA regra (evento_em_carga) que a aba raw_funil_eventos -> scorecard
+    # == funil. source vem do deal cru (nao vira coluna do raw_deals).
+    src_by_id = {d["id"]: (d.get("properties", {}) or {}).get("hs_object_source", "") for d in deals}
     carga_reuniao = dias_em_carga([e["data_entrou_reuniao"] for e in enriched])
     carga_diag = dias_em_carga([e["data_entrou_diagnostico"] for e in enriched])
     for e in enriched:
-        if e["data_entrou_reuniao"] in carga_reuniao:
+        src = src_by_id.get(e["deal_id"], "")
+        dc = e.get("data_criacao", "")
+        if evento_em_carga(src, e["data_entrou_reuniao"], dc, carga_reuniao):
             e["entrou_reuniao_em_carga"] = 1
-        if e["data_entrou_diagnostico"] in carga_diag:
+        if evento_em_carga(src, e["data_entrou_diagnostico"], dc, carga_diag):
             e["entrou_diagnostico_em_carga"] = 1
-    print(f"Funil carga (>= {BURST_MIN_CARGA_DIA}/dia no mesmo stage): "
-          f"reuniao={sorted(carga_reuniao)} diag={sorted(carga_diag)}")
+    print(f"Funil carga (Regra A: rajada>={BURST_MIN_CARGA_DIA}/dia OU import-direto): "
+          f"reuniao_dias={sorted(carga_reuniao)} diag_dias={sorted(carga_diag)}")
 
     # Fase 9 (30/04): segunda passada — preenche dup_count/severidade/keep_suggestion
     # baseado em visao global de todos deals enriched. Counter eh O(N), trivial.
@@ -2692,6 +2787,22 @@ def main():
             )
     except Exception as e:
         print(f"[warn] build_consolidado_layer falhou: {e}")
+
+    # Aba raw_funil_eventos (21/06): 1 linha por (deal x etapa em que entrou), com a
+    # data de entrada -> funil de barras date-filtravel no Looker. Isolado por try/except.
+    try:
+        eventos = build_funil_eventos_layer(deals, enriched, stages)
+        if eventos:
+            ev_header = list(eventos[0].keys())
+            ev_rows = [[r[k] for k in ev_header] for r in eventos]
+            write_to_sheets(
+                ev_rows, ev_header,
+                worksheet_name="raw_funil_eventos",
+                meta_label="ultima_sync_funil_eventos",
+                meta_range="A4:C4",
+            )
+    except Exception as e:
+        print(f"[warn] build_funil_eventos_layer falhou: {e}")
 
     # Aba raw_companies: TODAS as Companies (incluindo orfas sem Deal)
     # Desbloqueia scorecards Ato 3 Cadastro do dashboard Qualidade (23/04 tarde).
