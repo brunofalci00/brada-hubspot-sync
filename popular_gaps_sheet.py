@@ -38,16 +38,36 @@ LEIS = ["valor_lei_rouanet", "valor_lei_do_esporte", "valor_lei_do_esporte_estad
         "valor_lei_da_crianca_e_do_adolescente", "valor_lei_do_idoso",
         "valor_lei_da_reciclagem", "valor_pronas", "valor_pronon"]
 
+# Estagios pre-[Match]-Projetos (displayOrder 0-6) do pipeline Incentivador
+# (default). Match-Projetos == 1246602643 (displayOrder 7); tudo antes e' pre-match.
+# Validado via crm/v3/pipelines/deals/default em 22/06 (sessao S-D).
+# Origem: ata_ivan_22jun (caso Jaque, closedate preenchida antes do match).
+PRE_MATCH_STAGES_INCENTIVADOR = {
+    "appointmentscheduled",  # 0 [SDR] Inbound
+    "1246562475",            # 1 [SDR] Outbound
+    "1246562477",            # 2 [SDR] Qualificacao
+    "1291711757",            # 3 [EV] Prospects
+    "1246562476",            # 4 [EV] - Reuniao Agendada
+    "1246562478",            # 5 [EV] - Diagnostico
+    "1246602642",            # 6 [EV + Match] - Politica de Patrocinio
+}
+
 # Segmentacao venda x cadastro (Ivan 12/06): o "puxao de orelha" do Ivan mira o
 # dado de VENDA que trava comissao (sao exatamente as colunas que a planilha
 # financeira puxa do deal); higiene de cadastro de Company fica numa faixa fria.
 # Acoplado de proposito aos tipos definidos em compute_gaps (mesmo arquivo).
+# Gaps 14/15/16 adicionados na sessao S-D (Ivan 22/06): tipo_de_proponente e
+# numero_do_projeto sao insumos Incentivador-only (calculo 10/15% + reconciliacao
+# planilha MATCH); closedate-pre-match captura o erro tipo Jaque que infla o funil.
 TIPOS_VENDA = {
     "2. Ganho sem closedate",
     "3. Ganho sem valor_do_aporte",
     "4. Ganho sem lei_principal",
     "5. Ganho sem nome_do_proponente",
     "6. Ganho sem nome_do_projeto",
+    "14. Ganho sem tipo_de_proponente",
+    "15. Ganho sem numero_do_projeto",
+    "16. Closedate antes do estagio [Match]-Projetos",
 }
 
 
@@ -182,6 +202,24 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
                              "descricao": "Preencher nome do projeto incentivado",
                              "prioridade": "MEDIA"})
 
+        # Gaps 14/15: Incentivador-only (insumos do calculo 10/15% + planilha MATCH).
+        # Nao disparam pra deals Ganho-Proponente (semantica diferente).
+        if p.get("dealstage", "") in _g_inc:
+            # 14. ganho-incentivador sem tipo_de_proponente
+            if not (p.get("tipo_de_proponente") or "").strip():
+                gaps.append({"owner_nome": owner_nome, "tipo": "14. Ganho sem tipo_de_proponente",
+                             "entidade": "Deal", "id": did, "nome": dname,
+                             "link": deal_link(did),
+                             "descricao": "Preencher tipo de proponente (interno/externo) - insumo do calculo 10/15%",
+                             "prioridade": "ALTA"})
+            # 15. ganho-incentivador sem numero_do_projeto
+            if not (p.get("numero_do_projeto") or "").strip():
+                gaps.append({"owner_nome": owner_nome, "tipo": "15. Ganho sem numero_do_projeto",
+                             "entidade": "Deal", "id": did, "nome": dname,
+                             "link": deal_link(did),
+                             "descricao": "Preencher numero do projeto (necessario pro financeiro)",
+                             "prioridade": "ALTA"})
+
         # 7. perdido sem motivo
         if is_perdido and not (p.get("motivo_de_perda") or "").strip():
             gaps.append({"owner_nome": owner_nome, "tipo": "7. Perdido sem motivo_de_perda",
@@ -189,6 +227,16 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
                          "link": deal_link(did),
                          "descricao": "Preencher motivo da perda",
                          "prioridade": "MEDIA"})
+
+        # 16. closedate preenchida antes do estagio [Match]-Projetos (Incentivador pre-match).
+        # Captura o erro de execucao do comercial (caso Jaque): closedate antes
+        # do match infla scorecard e quebra ordenacao cronologica do funil.
+        if p.get("dealstage", "") in PRE_MATCH_STAGES_INCENTIVADOR and (p.get("closedate") or "").strip():
+            gaps.append({"owner_nome": owner_nome, "tipo": "16. Closedate antes do estagio [Match]-Projetos",
+                         "entidade": "Deal", "id": did, "nome": dname,
+                         "link": deal_link(did),
+                         "descricao": "Data de fechamento preenchida antes do match - provavelmente errada; corrigir",
+                         "prioridade": "ALTA"})
 
     # ========== GAPS DE COMPANY (so se ha >=1 deal associado) ==========
     for c in companies:
