@@ -2499,7 +2499,7 @@ def _produto_meta_grupo(prod: str) -> str:
     return PRODUTO_META_NORMALIZE.get(prod, prod)
 
 
-def write_performance_sheet(enriched, gc):
+def write_performance_sheet(enriched, gc, efetivo_by_deal=None):
     """Agrega deals do ano corrente por produto e faz join com metas_anuais.
 
     Escreve aba raw_metas_anuais com dados pre-computados — sem necessidade
@@ -2507,7 +2507,13 @@ def write_performance_sheet(enriched, gc):
 
     Colunas de saida:
       produto, vendido_brl, valor_projetado_ativo, n_ganhos_ano,
-      meta_anual_brl, pct_meta
+      meta_anual_brl, pct_meta, efetivo_brl, efetivo_classificado_n
+
+    efetivo_by_deal (opcional): {deal_id: valor_efetivo_brada} vindo do
+      consolidado. Agrega a camada EFETIVA da Brada (10/15%) por produto em
+      efetivo_brl, com efetivo_classificado_n = quantos won do ano tem efetivo>0
+      (escancara a cobertura parcial). Unit-agnostic: NAO toca pct_meta (bruto).
+      Ver PROMPT_Meta_Liquida_vs_Bruta + D3/Backlog_Split_Match. 21/06.
 
     Regras (decisao Bruno 05/05):
       - vendido_brl = SUM(valor_vendido) onde e_ganho=1 AND year(closedate)=ano_corrente.
@@ -2519,6 +2525,7 @@ def write_performance_sheet(enriched, gc):
     """
     sh = gc.open_by_key(SPREADSHEET_ID)
     ano_corrente = str(datetime.datetime.now().year)
+    efetivo_by_deal = efetivo_by_deal or {}
 
     # Ler metas_anuais (preenchida manualmente). Filtra ano corrente.
     # IMPORTANTE: ler UNFORMATTED — display "90.000" gera ambiguidade locale
@@ -2566,6 +2573,8 @@ def write_performance_sheet(enriched, gc):
         "vendido_brl": 0.0,
         "valor_projetado_ativo": 0.0,
         "n_ganhos_ano": 0,
+        "efetivo_brl": 0.0,
+        "efetivo_classificado_n": 0,
     })
     for d in enriched:
         prod_raw = str(d.get("produto", "")).strip()
@@ -2583,6 +2592,11 @@ def write_performance_sheet(enriched, gc):
             if ano_close == ano_corrente:
                 perf[prod]["vendido_brl"] += float(d.get("valor_vendido", 0) or 0)
                 perf[prod]["n_ganhos_ano"] += 1
+                # camada efetiva (10/15% Brada) do MESMO deal won+ano, via consolidado
+                ef = float(efetivo_by_deal.get(d.get("deal_id", ""), 0) or 0)
+                perf[prod]["efetivo_brl"] += ef
+                if ef > 0:
+                    perf[prod]["efetivo_classificado_n"] += 1
 
     # FULL OUTER JOIN: uniao de chaves de metas e de deals (so produtos)
     all_prods = sorted(set(metas_idx.keys()) | set(perf.keys()))
@@ -2600,6 +2614,9 @@ def write_performance_sheet(enriched, gc):
             "n_ganhos_ano": p.get("n_ganhos_ano", 0) or 0,
             "meta_anual_brl": round(meta_brl, 2),
             "pct_meta": pct_meta,
+            # colunas EFETIVAS no FIM (protege binding posicional do Looker). 21/06.
+            "efetivo_brl": round(p.get("efetivo_brl", 0) or 0, 2),
+            "efetivo_classificado_n": p.get("efetivo_classificado_n", 0) or 0,
         })
 
     if not rows_out:
@@ -2776,9 +2793,16 @@ def main():
     # visão 4 colunas Vitor, dashboard CRIAPE). Deriva interno/externo + comissão
     # Vendas% + projeto_key + flags de conversão/overlap. NÃO toca o CRM.
     # Isolado por try/except pra não derrubar o pipeline existente.
+    efetivo_by_deal = {}
     try:
         cons = build_consolidado_layer(enriched, stages=stages)
         if cons:
+            # mapa deal_id -> valor_efetivo_brada pra write_performance_sheet agregar
+            # a camada efetiva (10/15%) por produto. {} se falhar (efetivo_brl=0). 21/06.
+            efetivo_by_deal = {
+                r["deal_id"]: (r.get("valor_efetivo_brada", 0) or 0)
+                for r in cons if r.get("deal_id")
+            }
             cons_header = list(cons[0].keys())
             cons_rows = [[r[k] for k in cons_header] for r in cons]
             write_to_sheets(
@@ -2965,7 +2989,7 @@ def main():
     # Substitui raw_performance/metas_mensais (descontinuados).
     try:
         gc_perf = get_sheets_client()
-        write_performance_sheet(enriched, gc_perf)
+        write_performance_sheet(enriched, gc_perf, efetivo_by_deal=efetivo_by_deal)
     except Exception as e:
         print(f"[warn] Performance sheet falhou: {e}")
 
