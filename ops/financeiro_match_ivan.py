@@ -218,25 +218,25 @@ def pick_date(r, field):
     return parse_closedate(r.get(field, ""))
 
 
-def fetch_data_do_match(deal_ids):
-    """Batch read de data_do_match pros deal_ids (HubSpot API).
-    Retorna {deal_id: 'YYYY-MM-DD' ou ''}. Vazio se token ausente."""
+def fetch_deal_props(deal_ids, props):
+    """Batch read genérico (HubSpot API). Retorna {deal_id: {prop: value}}.
+    Usado pra (1) buscar data_do_match (não está no consolidado), (2)
+    override do closedate/lei_principal pra refletir PATCHs recentes
+    antes do próximo sync horário."""
     if not HUBSPOT_TOKEN or not deal_ids:
         return {}
     url = "https://api.hubapi.com/crm/v3/objects/deals/batch/read"
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     out = {}
-    # Batch read aceita até 100 IDs por chamada
     for i in range(0, len(deal_ids), 100):
         chunk = deal_ids[i:i + 100]
-        body = {"inputs": [{"id": d} for d in chunk], "properties": ["data_do_match"]}
+        body = {"inputs": [{"id": d} for d in chunk], "properties": props}
         r = requests.post(url, headers=headers, json=body, timeout=30)
         if r.status_code != 200:
             print(f"[aviso] batch read HubSpot {r.status_code}: {r.text[:200]}")
             continue
         for d in r.json().get("results", []):
-            v = d.get("properties", {}).get("data_do_match", "") or ""
-            out[d["id"]] = v
+            out[d["id"]] = d.get("properties", {}) or {}
     return out
 
 
@@ -482,31 +482,26 @@ def build_rows_from_manual(manual, pool, cycle_start, cycle_end):
             continue
 
         flags = []
-        # G: data_do_aporte > data_do_match > vazio
-        d_aporte = parse_closedate(our.get("data_aporte", ""))
-        d_match = parse_closedate(our.get("data_match", ""))
+        # G = closedate (Data de fechamento do card). Regra desde o começo
+        # (decisão Bruno 22/06 na sessão S-A): a coluna G da planilha do Ivan
+        # mapeia direto pro closedate, não pra data_do_aporte/data_do_match.
         d_close = parse_closedate(our.get("closedate", ""))
-        if d_aporte:
-            g_date = d_aporte
-            g_source = "data_do_aporte"
-        elif d_match:
-            g_date = d_match
-            g_source = "data_do_match"
-            flags.append(
-                "data_do_aporte vazio no HubSpot — usei data_do_match "
-                f"({d_match.strftime('%d/%m/%Y')}) como fallback"
-            )
+        d_match = parse_closedate(our.get("data_match", ""))
+        d_aporte = parse_closedate(our.get("data_aporte", ""))
+        if d_close:
+            g_date = d_close
+            g_source = "closedate"
         else:
             g_date = None
             g_source = "vazio"
-            flags.append("data_do_aporte E data_do_match vazios no HubSpot")
+            flags.append("Data de fechamento (closedate) vazia no card")
 
         if g_date and not (cycle_start <= g_date <= cycle_end):
             flags.append(
-                f"{g_source}={g_date:%d/%m/%Y} está FORA do ciclo "
-                f"({cycle_start:%d/%m} a {cycle_end:%d/%m}) — manual indica "
-                f"{m['data'].strftime('%d/%m/%Y') if m['data'] else '?'}; "
-                "provável dado desatualizado no HubSpot"
+                f"Data de fechamento do card = {g_date:%d/%m/%Y}, FORA do ciclo "
+                f"({cycle_start:%d/%m} a {cycle_end:%d/%m}). Manual indica "
+                f"{m['data'].strftime('%d/%m/%Y') if m['data'] else '?'} — "
+                "card desatualizado, atualizar"
             )
 
         # Col B: lei_principal vazio = gap
@@ -891,16 +886,23 @@ def main():
     pool = filter_match_pool(rows)
     print(f"pool MATCH (Vendas% AND convertido=1 AND valor>0): {len(pool)} deals")
 
-    # data_do_match não está no consolidado — fetch direto do HubSpot. É o
-    # candidato natural pra coluna G "Data do aporte" (data prometida pelo
-    # executivo). Achado da S-A: dos 5 deals da Junho_MATCH manual, 3
-    # batem com data_do_match exato; 2 da Casa do Alemão (15/abr no HubSpot
-    # vs 15/jun na manual) sinalizam dado desatualizado no HubSpot.
+    # Refresh direto do HubSpot pros 3 campos críticos da S-A. data_do_match
+    # não está no consolidado; closedate + lei_principal SÃO sobrescritos
+    # pra refletir PATCHs recentes (o consolidado pode estar atrás do sync
+    # horário). Em estado estável (cron pós-PATCH rodou), o override == o que
+    # já estava no consolidado.
     deal_ids_pool = [r["deal_id"] for r in pool]
-    data_match_by_did = fetch_data_do_match(deal_ids_pool)
-    print(f"data_do_match preenchido em {sum(1 for v in data_match_by_did.values() if v)}/{len(pool)} deals do pool")
+    props_by_did = fetch_deal_props(deal_ids_pool, ["closedate", "lei_principal", "data_do_match"])
+    n_match = sum(1 for d in props_by_did.values() if d.get("data_do_match"))
+    n_lei = sum(1 for d in props_by_did.values() if d.get("lei_principal"))
+    print(f"refresh HubSpot: data_do_match {n_match}/{len(pool)} · lei_principal {n_lei}/{len(pool)}")
     for r in pool:
-        r["data_match"] = data_match_by_did.get(r["deal_id"], "")
+        live = props_by_did.get(r["deal_id"], {})
+        if live.get("closedate"):
+            r["closedate"] = live["closedate"]
+        if live.get("lei_principal"):
+            r["lei_principal"] = live["lei_principal"]
+        r["data_match"] = live.get("data_do_match", "")
 
     # 5) Diagnóstico opcional — matriz só pra info
     cs = args.cycle_start or DEFAULT_CYCLE_START
@@ -951,7 +953,7 @@ def main():
     rows_a_g_final = [it["row_a_g"] for it in items if it["row_a_g"]]
     print(f"Linhas a escrever: {len(rows_a_g_final)} de {len(items)} da manual")
     print(f"Ciclo de referência: {cs:%d/%m/%Y} a {ce:%d/%m/%Y}")
-    print("Estratégia G: data_do_aporte > data_do_match > vazio")
+    print("Estratégia G: closedate (Data de fechamento do card)")
 
     # 11) Gates simplificados (manual = source-of-truth; sem threshold de matched_total)
     section("Gates do --write")
