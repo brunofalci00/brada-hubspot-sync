@@ -121,9 +121,10 @@ def read_unformatted(ws):
 _results = []
 
 
-def guard(label, got, expected, hard=True, money=False):
+def guard(label, got, expected, hard=True, money=False, tol=None):
+    t = TOL if tol is None else tol
     if money:
-        ok = abs(num(got) - num(expected)) <= TOL
+        ok = abs(num(got) - num(expected)) <= t
         gs = f"R$ {num(got):,.2f}"
         es = f"R$ {num(expected):,.2f}"
     else:
@@ -259,6 +260,28 @@ def main():
         p = str(rm_get(r, "produto")).strip()
         print(f"      {p:14} {num(rm_get(r, 'vendido_brl')):>14,.2f} | "
               f"{num(rm_get(r, 'meta_anual_brl')):>12,.2f} | {int(num(rm_get(r, 'n_ganhos_ano')))}")
+
+    # camada EFETIVA (10/15% Brada) por produto — additivo, unit-agnostic (21/06).
+    # Pre-deploy a coluna nao existe -> info e pula (igual o funil acima).
+    if "efetivo_brl" in rm_idx:
+        criape_row = next((r for r in rm if str(rm_get(r, "produto")).strip() == "CRIAPE"), None)
+        if criape_row is not None:
+            cri_vend = num(rm_get(criape_row, "vendido_brl"))
+            cri_efet = num(rm_get(criape_row, "efetivo_brl"))
+            # CRIAPE = interno limpo (auto-fill) -> efetivo EXATAMENTE 15% do vendido (mesma
+            # base valor_do_aporte). Canario forte. Tol R$1 = soma de arredondamentos por deal.
+            guard("CRIAPE efetivo_brl == 15% do vendido_brl", round(cri_efet, 2),
+                  round(0.15 * cri_vend, 2), money=True, tol=1.0)
+        sane = all(num(rm_get(r, "efetivo_brl")) <= num(rm_get(r, "vendido_brl")) + TOL for r in rm)
+        guard("efetivo_brl <= vendido_brl (corte nunca passa o bruto)", sane, True)
+        print("    efetivo por produto (efetivo_brl | classificados/n_ganhos; gap = pend. classif./S6):")
+        for r in rm:
+            p = str(rm_get(r, "produto")).strip()
+            ng = int(num(rm_get(r, "n_ganhos_ano")))
+            cl = int(num(rm_get(r, "efetivo_classificado_n")))
+            print(f"      {p:14} {num(rm_get(r, 'efetivo_brl')):>14,.2f} | {cl}/{ng}")
+    else:
+        info("Camada efetiva (efetivo_brl)", "coluna ausente (sync da camada efetiva nao deployado ainda)")
 
     # ---------- consolidado: view do Vitor (grupo, won 2026, inclui CRIAPE) ----------
     co_idx, co = read_unformatted(sh.worksheet("consolidado"))
