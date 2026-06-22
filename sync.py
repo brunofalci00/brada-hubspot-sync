@@ -599,9 +599,12 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
     # Pós Venda stages são abertos no HubSpot (limitação: só 1 closed-won por pipeline)
     # mas representam deals já fechados — tratados como ganho para fins de revenue.
     # VENDIDO_POS_VENDA cobre Incentivador + Proponente (definido perto da linha 740).
-    e_ganho = 1 if (is_closed and prob == "1.0") or stage_id in VENDIDO_POS_VENDA else 0
+    # S2.4: zumbis (owner=Rafa AND stage pós-venda) NÃO contam como ganho nem ativo
+    # — são duplicatas organizacionais da pós-venda, não vendas reais.
+    is_zumbi = is_card_pos_venda_zumbi(stage_id, p.get("hubspot_owner_id", ""))
+    e_ganho = 0 if is_zumbi else (1 if (is_closed and prob == "1.0") or stage_id in VENDIDO_POS_VENDA else 0)
     e_perdido = 1 if (is_closed and prob == "0.0") else 0
-    e_ativo = 1 if not is_closed and stage_id not in VENDIDO_POS_VENDA else 0
+    e_ativo = 0 if is_zumbi else (1 if not is_closed and stage_id not in VENDIDO_POS_VENDA else 0)
 
     def num(x):
         try:
@@ -743,6 +746,7 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
         "e_ganho": e_ganho,
         "e_perdido": e_perdido,
         "e_ativo": e_ativo,
+        "e_pos_venda_zumbi": 1 if is_zumbi else 0,
         "produto": produto,
         "produto_foi_inferido": produto_foi_inferido,
         # Valores
@@ -946,6 +950,18 @@ VENDIDO_POS_VENDA = POS_VENDA_STAGES | PROPONENTE_POS_VENDA_STAGES
 # 1253324968 = Ganho Incentivador, 1246571362 = Fechado Proponente (closed-won dos dois pipelines)
 STAGES_GANHO = {"1253324968", "1246571362"} | VENDIDO_POS_VENDA
 PIPELINE_TO_PRODUTO = {"default": "Match", "839644419": "Elaboração"}  # value==label validado 22/04
+
+# S2.4 (Bruno × Rafa 22/06): owners que criam cards em pós-venda como duplicata
+# organizacional, NÃO como venda real. Card "zumbi" = (owner in BLACKLIST AND stage
+# in VENDIDO_POS_VENDA). Zumbis NÃO contam como Ganho em raw_deals/efetivo_brl, NEM
+# disparam gaps 2/3 (closedate, valor_do_aporte). Continuam no raw_funil_eventos.
+POS_VENDA_OWNERS_BLACKLIST = {
+    "86273315",  # Rafaela Barbosa (match.projetos@brada.social)
+}
+
+
+def is_card_pos_venda_zumbi(stage_id, owner_id):
+    return owner_id in POS_VENDA_OWNERS_BLACKLIST and stage_id in VENDIDO_POS_VENDA
 
 # === Funil de entrada por stage (hs_v2_date_entered_<stageId>) ===
 # O timestamp de entrada no stage PERSISTE depois do deal sair -> permite contar
@@ -2978,6 +2994,7 @@ def main():
             ganho_stages=ganho_stages,
             perdido_stages=perdido_stages,
             ganho_stages_incentivador=ganho_stages_incentivador,
+            pos_venda_stages=VENDIDO_POS_VENDA,
             gc=gc,
         )
     except Exception as e:
