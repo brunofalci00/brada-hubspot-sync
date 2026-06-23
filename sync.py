@@ -85,6 +85,7 @@ DEAL_PROPERTIES = [
     "cnpj_do_incentivador",  # criado em E1-bis - CNPJ da filial/PDV; vazio = fallback Company.cnpj
     # 11 campos de valor por lei (fonte de financiamento)
     "valor_lei_rouanet",
+    "valor_lei_do_audiovisual",  # combina com Rouanet, total max 4% IR (S2.5 23/06)
     "valor_lei_do_esporte",  # esporte federal
     "valor_lei_do_esporte_estadual",
     "valor_lei_do_bem",
@@ -107,6 +108,7 @@ DEAL_PROPERTIES = [
 # Map interno: property -> label legivel pra lei_principal
 LEIS_MAP = {
     "valor_lei_rouanet": "Rouanet",
+    "valor_lei_do_audiovisual": "Audiovisual",  # S2.5: combina com Rouanet, max 4% IR conjunto
     "valor_lei_do_esporte": "Esporte Federal",
     "valor_lei_do_esporte_estadual": "Esporte Estadual",
     "valor_lei_do_bem": "Lei do Bem",
@@ -123,6 +125,7 @@ LEIS_MAP = {
 # Usado como fallback quando Deal.linha_de_imposto_categoria nao esta preenchido.
 LEI_TO_CATEGORIA = {
     "Rouanet": "IR",
+    "Audiovisual": "IR",  # S2.5: combina com Rouanet (mesma cesta de 4% IR)
     "Esporte Federal": "IR",
     "Lei do Bem": "IR",
     "FIA (Crianca e Adolescente)": "IR",
@@ -227,6 +230,7 @@ COMPANY_PROPERTIES = [
     # pro dashboard agregar via Company sem duplicar (1 row por empresa).
     "valor_total_do_diagnostico",
     "valor_lei_rouanet",
+    "valor_lei_do_audiovisual",  # S2.5 23/06: combina com Rouanet, max 4% IR
     "valor_lei_do_esporte",
     "valor_lei_do_esporte_estadual",
     "valor_lei_do_bem",
@@ -242,6 +246,7 @@ COMPANY_PROPERTIES = [
     # Grupo HubSpot `diagnostico_2025` (ver ops/criar_props_diagnostico_2025.py).
     "valor_total_do_diagnostico_2025",
     "valor_lei_rouanet_2025",
+    "valor_lei_do_audiovisual_2025",  # S2.5 23/06
     "valor_lei_do_esporte_2025",
     "valor_lei_do_esporte_estadual_2025",
     "valor_lei_do_bem_2025",
