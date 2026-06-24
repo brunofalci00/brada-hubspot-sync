@@ -601,13 +601,16 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
 
     is_closed = stage_info.get("is_closed", False)
     prob = stage_info.get("probability", "")
-    # Pós Venda stages são abertos no HubSpot (limitação: só 1 closed-won por pipeline)
-    # mas representam deals já fechados — tratados como ganho para fins de revenue.
-    # VENDIDO_POS_VENDA cobre Incentivador + Proponente (definido perto da linha 740).
-    # S2.4: zumbis (owner=Rafa AND stage pós-venda) NÃO contam como ganho nem ativo
-    # — são duplicatas organizacionais da pós-venda, não vendas reais.
+    # Pós Venda stages: deals já entregues, fora do recorte "Won do ano".
+    # Decisão Bruno 23/06 (S2.3): alinhar e_ganho com a intenção 16/04 do planejamento_growth_base
+    # ("Pós Venda - excluir de 2026") e com a regra do financeiro mensal.
+    # ANTES: e_ganho=1 forçado pra qualquer stage in VENDIDO_POS_VENDA (4 cards 2026 + 5 ano vazio).
+    # AGORA: e_ganho=1 só pra closed-won real (is_closed AND prob==1.0).
+    # VENDIDO_POS_VENDA continua tirando do e_ativo (linha 612) — ficam invisíveis no recorte Won/Ativo
+    # do dashboard. Pra visualizar entrega/pós-venda, usar raw_funil_eventos.
+    # S2.4: zumbis (owner=Rafa AND stage pós-venda) NÃO contam como ganho nem ativo.
     is_zumbi = is_card_pos_venda_zumbi(stage_id, p.get("hubspot_owner_id", ""))
-    e_ganho = 0 if is_zumbi else (1 if (is_closed and prob == "1.0") or stage_id in VENDIDO_POS_VENDA else 0)
+    e_ganho = 0 if is_zumbi else (1 if (is_closed and prob == "1.0") else 0)
     e_perdido = 1 if (is_closed and prob == "0.0") else 0
     e_ativo = 0 if is_zumbi else (1 if not is_closed and stage_id not in VENDIDO_POS_VENDA else 0)
 
