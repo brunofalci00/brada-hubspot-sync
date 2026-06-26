@@ -1799,21 +1799,23 @@ def build_consolidado_layer(enriched, stages=None):
         empresa_canonica = _normalize_cnpj(e.get("company_cnpj") or "") or _norm_key2(e.get("company_name") or "")
 
         # interno/externo deriva do PROPONENTE (reunião Leila/Ivan 02/06): entidade do grupo
-        # (EGP/Encaminhando/Brada/CRIAPE) = Interno (15%); terceiro (Externo) = Externo (10%).
+        # (EGP/Encaminhando/Brada) = Interno (15%); terceiro (Externo) = Externo (10%).
         # Via property tipo_de_proponente (substitui o split de produto, SUPERSEDED). Vazio
         # até classificar. Ver Modelo_Interno_Externo_Tipo_Proponente.
-        # Precedência: (1) classificação explícita na property tipo_de_proponente vence;
-        # (2) produto==CRIAPE = sempre interno (regra estrutural); (3) AUTO-DERIVAÇÃO do
-        # nome_do_proponente (proponente do grupo=Interno; terceiro=Externo); (4) vazio="".
+        # Precedência: (1) produto==CRIAPE = SEM CLASSIFICAÇÃO (override total — decisão Ivan
+        # 24/06: comissão CRIAPE incerta, descobre só pós-projeto, NÃO computar líquido. Ref
+        # Achado_CRIAPE_Status_Migration_23jun update 24/06); (2) classificação explícita na
+        # property tipo_de_proponente vence; (3) AUTO-DERIVAÇÃO do nome_do_proponente
+        # (proponente do grupo=Interno; terceiro=Externo); (4) vazio="".
         # A auto-derivação cobre ~89% do valor won sem trabalho manual (Sprint 0.1).
         tipo_prop = (e.get("tipo_de_proponente") or "").strip()
         nome_prop = (e.get("nome_do_proponente") or "").strip()
-        if tipo_prop == "Externo":
+        if produto == "CRIAPE":
+            interno_externo = ""  # override total (Ivan 24/06) — CRIAPE sem líquido computado
+        elif tipo_prop == "Externo":
             interno_externo = "Externo"
         elif tipo_prop:
             interno_externo = "Interno"  # classificação explícita (override) vence
-        elif produto == "CRIAPE":
-            interno_externo = "Interno"  # CRIAPE (Proponente) = sempre projeto interno (enum é o marcador)
         elif _map_proponente_interno(nome_prop):
             interno_externo = "Interno"  # proponente ∈ 8 entidades do grupo
         elif nome_prop:
