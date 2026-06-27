@@ -59,6 +59,8 @@ PRE_MATCH_STAGES_INCENTIVADOR = {
 # Gaps 14/15/16 adicionados na sessao S-D (Ivan 22/06): tipo_de_proponente e
 # numero_do_projeto sao insumos Incentivador-only (calculo 10/15% + reconciliacao
 # planilha MATCH); closedate-pre-match captura o erro tipo Jaque que infla o funil.
+# Gap 17 (S3 27/06): percentual_brada (% real Brada) — so cobra deals JA classificados
+# (tipo preenchido); sem %, o consolidado usa fallback 10/15. Ver Achado_Percentual_Real_Match_27jun.
 # S2.4 (Bruno × Rafa 22/06): espelho de sync.py.POS_VENDA_OWNERS_BLACKLIST.
 # Owners cujos cards em pós-venda são duplicatas organizacionais, NÃO vendas reais.
 # Esses cards NÃO disparam gaps 2/3 (closedate, valor_do_aporte). Manter sincronizado.
@@ -75,6 +77,7 @@ TIPOS_VENDA = {
     "14. Ganho sem tipo_de_proponente",
     "15. Ganho sem numero_do_projeto",
     "16. Closedate antes do estagio [Match]-Projetos",
+    "17. Ganho sem percentual_brada",
 }
 
 
@@ -232,6 +235,15 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
                              "entidade": "Deal", "id": did, "nome": dname,
                              "link": deal_link(did),
                              "descricao": "Preencher numero do projeto (necessario pro financeiro)",
+                             "prioridade": "ALTA"})
+            # 17. ganho-incentivador classificado mas sem percentual_brada (% real Brada, S3).
+            # So cobra quem JA tem tipo_de_proponente (gap 14 cobra a classificacao); sem %,
+            # o consolidado cai no fallback 10/15 (aproximacao, esconde o externo variavel).
+            if (p.get("tipo_de_proponente") or "").strip() and not (p.get("percentual_brada") or "").strip():
+                gaps.append({"owner_nome": owner_nome, "tipo": "17. Ganho sem percentual_brada",
+                             "entidade": "Deal", "id": did, "nome": dname,
+                             "link": deal_link(did),
+                             "descricao": "Preencher % real da Brada nessa venda (15 interno / varia externo) - senao usa fallback 10/15",
                              "prioridade": "ALTA"})
 
         # 7. perdido sem motivo
