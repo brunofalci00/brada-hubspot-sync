@@ -1,0 +1,58 @@
+name: Comissoes Ivan - Controle de Vendas (append dia 20)
+
+# Append incremental dos Match Won do ciclo na aba "Controle de Vendas" da
+# planilha OFICIAL do Ivan (1XVRuIMN...). SO APPEND, nunca sobrescreve. Le o
+# consolidado ja materializado pelo sync.yml (cron horario), entao nao roda o
+# sync aqui (mesmo padrao do reporting_financeiro.yml).
+on:
+  # Cron do dia 20 DESATIVADO ate sign-off do Ivan (planilha = folha de
+  # pagamento). Offset :30 deliberado: o sync.yml roda no minuto :00
+  # (clear+write no consolidado); o guard MIN_ROWS_GUARD ja protege leitura
+  # parcial, e o offset evita o retry. Quando ativado, o cron roda em --write
+  # no ciclo corrente (event_name == schedule no step abaixo).
+  # TODO ativar apos sign-off:
+  # schedule:
+  #   - cron: '30 12 20 * *'   # dia 20, 09:30 BRT
+  workflow_dispatch:
+    inputs:
+      write:
+        description: 'Gravar de verdade na planilha oficial? (false = dry-run + gate manual)'
+        type: boolean
+        default: false
+      cycle:
+        description: 'Ciclo YYYY-MM (vazio = ciclo corrente)'
+        type: string
+        default: ''
+
+jobs:
+  comissoes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Teste unitario (logica de dedup/montagem = folha)
+        run: python ops/_test_comissoes_ivan.py
+
+      - name: Append na Controle de Vendas (oficial Ivan)
+        env:
+          # SPREADSHEET_ID = fonte do consolidado (Brada_Dashboard_Deals), igual
+          # ao sync/reporting. O script NAO usa HubSpot (Sheets-only).
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.write }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --write"
+          fi
+          if [ -n "${{ inputs.cycle }}" ]; then
+            ARGS="$ARGS --cycle ${{ inputs.cycle }}"
+          fi
+          echo "Rodando: python sheets_comissoes_ivan.py $ARGS"
+          python sheets_comissoes_ivan.py $ARGS
