@@ -59,6 +59,7 @@ DEAL_PROPERTIES = [
     "motivo_de_perda",
     "nome_do_proponente",
     "tipo_de_proponente",  # 03/06: keystone interno/externo (grupo=interno / Externo=externo). Ver Modelo_Interno_Externo_Tipo_Proponente
+    "percentual_brada",  # S3 27/06: % real Brada por deal (executivo preenche; fallback 10/15 no consolidado)
     "nome_do_projeto",
     "numero_do_projeto",  # Sprint 1 consolidado: chave de projeto (linkagem cross-pipeline)
     "createdate",
@@ -804,6 +805,7 @@ def enrich(deal, stages, deal_to_company, companies, owners=None,
         "email_proponente": p.get("email_proponente", ""),
         "telefone_proponente": p.get("telefone_proponente", ""),
         "tipo_de_proponente": p.get("tipo_de_proponente", ""),  # 03/06: deriva interno/externo
+        "percentual_brada": num(p.get("percentual_brada")),  # S3 27/06: % real Brada (0.0 se vazio -> fallback)
         "nome_do_projeto": p.get("nome_do_projeto", ""),
         "numero_do_projeto": p.get("numero_do_projeto", ""),  # Sprint 1: chave de projeto
         "projeto_beneficiario_criap": p.get("projeto_beneficiario_criap", ""),  # Sprint 1: projeto_key CRIAPE
@@ -1823,13 +1825,18 @@ def build_consolidado_layer(enriched, stages=None):
         else:
             interno_externo = ""  # sem classificação (residual manual / planilha)
 
-        # Comissão BRADA = valor × 15/10% → Líquido × 0,88 (CONFIRMADO na planilha do Ivan).
+        # Comissão BRADA = valor × % real (property percentual_brada, S3 27/06) com fallback
+        # 15/10% quando vazio. Ref PROMPT_S3_Percentual_Real_Match_Brada. Externo varia caso a
+        # caso; Interno default 15%. CRIAPE já zerado pelo override acima (interno_externo="").
         # comissao_brada/liquido = camada CONFIÁVEL (alimenta valor_efetivo_brada das views).
+        pct_brada_real = e.get("percentual_brada")  # float (num()), 0.0 se vazio
         comissao_brada = liquido = c_ivan = c_jaque = c_externo = 0.0
         if interno_externo == "Interno":
-            comissao_brada = valor * PCT_INTERNO
+            pct = (pct_brada_real / 100.0) if pct_brada_real else PCT_INTERNO
+            comissao_brada = valor * pct
         elif interno_externo == "Externo":
-            comissao_brada = valor * PCT_EXTERNO
+            pct = (pct_brada_real / 100.0) if pct_brada_real else PCT_EXTERNO
+            comissao_brada = valor * pct
         if comissao_brada:
             liquido = comissao_brada * FATOR_LIQUIDO
             # Split por pessoa (Ivan/Jaque) = stream Vendas% (Match). CRIAPE/Elaboração têm modelo
