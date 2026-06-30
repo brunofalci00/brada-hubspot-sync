@@ -25,8 +25,10 @@ Uso:
   python sheets_comissoes_ivan.py --cycle 2026-06 --write
   python sheets_comissoes_ivan.py --all-pending         # dry-run de TODOS os faltantes (catch-up)
 
-Escopo (Bruno 28/06): so a Controle de Vendas. As abas Junho_MATCH/Elaboracao
-estao fechadas e nao recebem nada. Criterio do append = ciclo do mes (incremental).
+Escopo deste modulo: a Controle de Vendas (cumulativa). As ABAS MENSAIS
+({Mes}_MATCH, {Mes}_Elaboracao) e a tabela do Ricardo sao geradas pelo modulo
+irmao sheets_abas_mensais_ivan.py (Bruno 30/06). Junho esta FECHADO (template).
+Criterio do append = ciclo do mes (incremental).
 """
 
 import argparse
@@ -128,12 +130,17 @@ def read_cv(sh, ws_name=CV_WS):
         raise SystemExit(f"[abort] aba '{ws_name}' veio vazia.")
     header = vals[0]
     header_strip = [str(h).strip() for h in header[:N_CV_COLS]]
-    if header_strip != CV_HEADER_EXPECTED:
-        diff = [(i, a, b) for i, (a, b) in enumerate(zip(header_strip, CV_HEADER_EXPECTED)) if a != b]
+    # Coluna A ("Cliente") e editada a mao pelo Ivan (virou ";" em 30/06) — valida
+    # B-R estritamente e deixa a coluna A FLEXIVEL (os dados de A continuam sendo o
+    # cliente). So as colunas que entram em folha precisam casar 1:1.
+    diff = [(i, (header_strip[i] if i < len(header_strip) else "<faltando>"), CV_HEADER_EXPECTED[i])
+            for i in range(1, N_CV_COLS)
+            if i >= len(header_strip) or header_strip[i] != CV_HEADER_EXPECTED[i]]
+    if diff:
         raise SystemExit(
-            "[abort] header da Controle de Vendas divergiu do contrato (alguem mexeu no layout?).\n"
-            f"  esperado: {CV_HEADER_EXPECTED}\n"
-            f"  atual   : {header_strip}\n"
+            "[abort] header B-R da Controle de Vendas divergiu do contrato (alguem mexeu no layout?).\n"
+            f"  esperado (B-R): {CV_HEADER_EXPECTED[1:]}\n"
+            f"  atual    (B-R): {header_strip[1:]}\n"
             f"  diffs (idx, atual, esperado): {diff}\n"
             "  Escrita posicional abortada pra nao por numero errado em folha."
         )
