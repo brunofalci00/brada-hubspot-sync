@@ -331,30 +331,42 @@ def run_elaboracao_mes(sh, cycle, deals, write, tab=None):
 
 
 # ---- Frente D: Tabela Elaboracao Won 2026 pro Ricardo ----
-RICARDO_TAB = "Ricardo_Elaboracao_2026"
-RICARDO_HEADER = ["Nome do Proponente", "Data do fechamento", "Tipo venda", "Condição de Pagamento",
-                  "Valor", "Lei da Submissão", "Data de pagamento", "Valor Pago", "OBS", "Líquido pago",
-                  "Ivan", "Ricardo", "Link HubSpot", "deal_id"]
-RIC_TECH_IDX = 13  # N
+# Alvo: planilha "Vendas_26" (NAO a oficial de Comissoes), aba "Copia de Vendas
+# 26_elaboracao" (Bruno 30/06). Layout da aba modelo "Vendas 26_elaboracao":
+# titulo "VENDAS 26" na linha 1, header na linha 3 a partir da coluna C; +
+# Link Hubspot + deal_id (oculto). Data de pagamento/Valor Pago = Ricardo.
+RICARDO_SHEET_ID = "13timE4IsrBPR7PIoIdOeBOp_OFup-Wa1LY0RO-tvjrY"
+RICARDO_TAB = "Cópia de Vendas 26_elaboração"
+RIC_HDR_ROW = 3                 # header na linha 3
+RIC_DATA_ROW0 = 4               # dados a partir da linha 4
+RIC_COL0 = 2                    # dados comecam na coluna C (idx 2; A/B = margem)
+RICARDO_HEADER = ["Nome do Proponente", "Data do fechamento", "Condição de Pagamento", "Valor",
+                  "Lei da Submissão", "Data de pagamento", "Valor Pago", "Link Hubspot", "deal_id"]
+RIC_DEALID_IDX = RIC_COL0 + len(RICARDO_HEADER) - 1   # coluna do deal_id (oculta)
 
 
 def build_ricardo_row(d):
+    """Linha (a partir da coluna C): Nome, Data fechamento, Condicao, Valor, Lei,
+    Data de pagamento (Ricardo), Valor Pago (Ricardo), Link Hubspot, deal_id."""
     p = d["properties"]
-    out = [""] * (RIC_TECH_IDX + 1)  # A-N
-    out[0] = _proponente(p)
     cd = parse_closedate(p.get("closedate"))
-    out[1] = fmt_date_br(cd) if cd else ""
-    out[2] = _produto_cru(p.get("produto"))
-    out[3] = (p.get("condicao_de_pagamento") or "").strip()
     v = parse_brl(p.get("valor_do_aporte"))
-    out[4] = v if v is not None else ""
-    out[5] = (p.get("lei_principal") or "").strip()
-    out[12] = f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{d['id']}"
-    out[RIC_TECH_IDX] = d["id"]
-    return out
+    return [
+        _proponente(p),
+        fmt_date_br(cd) if cd else "",
+        (p.get("condicao_de_pagamento") or "").strip(),
+        v if v is not None else "",
+        (p.get("lei_principal") or "").strip(),
+        "",  # Data de pagamento (Ricardo preenche)
+        "",  # Valor Pago (Ricardo preenche)
+        f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{d['id']}",
+        d["id"],
+    ]
 
 
-def run_ricardo(sh, deals, write, tab=RICARDO_TAB):
+def run_ricardo(gc, deals, write):
+    sh = gc.open_by_key(RICARDO_SHEET_ID)
+    tab = RICARDO_TAB
     cands = []
     for d in deals:
         cd = parse_closedate(d["properties"].get("closedate"))
@@ -362,39 +374,60 @@ def run_ricardo(sh, deals, write, tab=RICARDO_TAB):
             d["_date"] = cd
             cands.append(d)
     cands.sort(key=lambda d: d["_date"], reverse=True)
-    exists, last_row, existing_ids, is_auto = read_existing(sh, tab, 6, RIC_TECH_IDX)
+
+    vals = sh.values_get(f"'{tab}'!A1:AZ3000", params={"valueRenderOption": "UNFORMATTED_VALUE"}).get("values", [])
+
+    def cell(row, i):
+        return (row + [""] * (RIC_DEALID_IDX + 1))[i]
+
+    has_header = (len(vals) >= RIC_HDR_ROW
+                  and str(cell(vals[RIC_HDR_ROW - 1], RIC_COL0)).strip() == "Nome do Proponente")
+    existing_ids = set()
+    last_data_row = RIC_HDR_ROW
+    for n, row in enumerate(vals, start=1):
+        if n < RIC_DATA_ROW0:
+            continue
+        nome = str(cell(row, RIC_COL0)).strip()
+        did = str(cell(row, RIC_DEALID_IDX)).strip()
+        if nome or did:
+            last_data_row = n
+            if did:
+                existing_ids.add(did)
     novos = [d for d in cands if d["id"] not in existing_ids]
 
     print("=" * 78)
-    print(f"FRENTE D — {tab} (Elaboracao ganho closedate >= 2026-01-01)")
-    print(f"  aba existe: {'sim' if exists else 'nao (sera criada)'}")
+    print(f"FRENTE D — '{tab}' (Planilha Vendas_26) | Elaboracao ganho >= 2026")
+    print(f"  header presente: {'sim' if has_header else 'nao (sera escrito titulo + header)'}")
     print(f"  deals 2026: {len(cands)} | ja na aba: {len(cands) - len(novos)} | NOVOS: {len(novos)}")
     print("-" * 78)
     for d in novos[:30]:
         p = d["properties"]
-        print(f"  + {_proponente(p)[:34]:34} | {fmt_date_br(d['_date'])} | {_produto_cru(p.get('produto')):14} | deal {d['id']}")
+        print(f"  + {_proponente(p)[:36]:36} | {fmt_date_br(d['_date'])} | deal {d['id']}")
     if not novos:
         print("  (nada novo)")
     print()
     if not write:
         return
+    ws = sh.worksheet(tab)
+    if not has_header:
+        ws.update(values=[["VENDAS 26"]], range_name=rowcol_to_a1(1, RIC_COL0 + 1),
+                  value_input_option="USER_ENTERED")
+        c0 = rowcol_to_a1(RIC_HDR_ROW, RIC_COL0 + 1)
+        c1 = rowcol_to_a1(RIC_HDR_ROW, RIC_COL0 + len(RICARDO_HEADER))
+        ws.update(values=[RICARDO_HEADER], range_name=f"{c0}:{c1}", value_input_option="USER_ENTERED")
+        hide_columns(sh, ws, RIC_DEALID_IDX, 1)
+        last_data_row = RIC_HDR_ROW
     if not novos:
         print(f"[write] {tab}: 0 novos — nada a gravar.")
         return
-    if not exists:
-        ws = sh.add_worksheet(title=tab, rows=max(60, len(cands) + 10), cols=18)
-        ws.update(values=[RICARDO_HEADER], range_name="A1", value_input_option="USER_ENTERED")
-        hide_columns(sh, ws, RIC_TECH_IDX, 1)
-        last_row = 1
-    else:
-        ws = sh.worksheet(tab)
     rows_out = [build_ricardo_row(d) for d in novos]
-    start_row = last_row + 1
+    start_row = last_data_row + 1
     end_row = start_row + len(rows_out) - 1
-    rng = f"A{start_row}:{rowcol_to_a1(1, RIC_TECH_IDX + 1).rstrip('1')}{end_row}"
-    ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
-    print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng}. Link HubSpot por deal; deal_id oculto; "
-          "G-L pro Ricardo preencher.")
+    c0 = rowcol_to_a1(start_row, RIC_COL0 + 1)
+    c1 = rowcol_to_a1(end_row, RIC_COL0 + len(RICARDO_HEADER))
+    ws.update(values=rows_out, range_name=f"{c0}:{c1}", value_input_option="USER_ENTERED")
+    print(f"[write] {tab}: {len(rows_out)} linha(s) em {c0}:{c1}. Link Hubspot por deal; deal_id oculto; "
+          "Data de pagamento/Valor Pago pro Ricardo.")
 
 
 # ===================================================
@@ -440,7 +473,7 @@ def main():
         if do_elab:
             run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab)
         if do_ric:
-            run_ricardo(sh, deals, args.write)
+            run_ricardo(gc, deals, args.write)
 
     if not args.write:
         print("[dry-run] nada gravado. Use --write quando aprovado.")

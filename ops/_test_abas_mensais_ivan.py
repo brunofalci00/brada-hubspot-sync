@@ -59,18 +59,22 @@ def test_build_elaboracao_row():
 
 
 def test_build_ricardo_row():
+    # layout "Vendas 26_elaboracao" (a partir da col C): Nome, Data fechamento,
+    # Condicao, Valor, Lei, Data pagamento, Valor Pago, Link Hubspot, deal_id.
     d = {"id": "R1", "properties": {
         "nome_do_proponente": "PropR", "closedate": "2026-04-01T00:00:00Z",
-        "produto": "Elaboração", "valor_do_aporte": "3000", "lei_principal": "Esporte Federal"}}
+        "produto": "Elaboração", "condicao_de_pagamento": "Pix pela plataforma",
+        "valor_do_aporte": "3000", "lei_principal": "Esporte Federal"}}
     row = m.build_ricardo_row(d)
-    assert len(row) == 14
-    assert row[0] == "PropR"
-    assert row[2] == "Elaboração"
-    assert row[4] == 3000.0
-    for j in range(6, 12):
-        assert row[j] == ""
-    assert "hubspot.com" in row[12] and "R1" in row[12]   # M link
-    assert row[13] == "R1"                                 # N deal_id
+    assert len(row) == 9, "9 colunas a partir da coluna C"
+    assert row[0] == "PropR"                  # Nome
+    assert row[1] == "01/04/2026"             # Data do fechamento
+    assert row[2] == "Pix pela plataforma"    # Condicao de Pagamento
+    assert row[3] == 3000.0                   # Valor
+    assert row[4] == "Esporte Federal"        # Lei
+    assert row[5] == "" and row[6] == ""      # Data de pagamento / Valor Pago (Ricardo)
+    assert "hubspot.com" in row[7] and "R1" in row[7]   # Link Hubspot
+    assert row[8] == "R1"                                # deal_id
 
 
 def test_deals_no_ciclo():
