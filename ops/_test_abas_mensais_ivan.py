@@ -72,7 +72,8 @@ def test_build_ricardo_row():
     assert row[2] == "Pix pela plataforma"    # Condicao de Pagamento
     assert row[3] == 3000.0                   # Valor
     assert row[4] == "Esporte Federal"        # Lei
-    assert row[5] == "" and row[6] == ""      # Data de pagamento / Valor Pago (Ricardo)
+    assert row[5] == "01/04/2026"             # Data de pagamento = Data do fechamento (modelo)
+    assert row[6] == 3000.0                   # Valor Pago = Valor (modelo)
     assert "hubspot.com" in row[7] and "R1" in row[7]   # Link Hubspot
     assert row[8] == "R1"                                # deal_id
 

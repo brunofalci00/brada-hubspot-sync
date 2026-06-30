@@ -347,26 +347,37 @@ RIC_DEALID_IDX = RIC_COL0 + len(RICARDO_HEADER) - 1   # coluna do deal_id (ocult
 
 def build_ricardo_row(d):
     """Linha (a partir da coluna C): Nome, Data fechamento, Condicao, Valor, Lei,
-    Data de pagamento (Ricardo), Valor Pago (Ricardo), Link Hubspot, deal_id."""
+    Data de pagamento, Valor Pago, Link Hubspot, deal_id.
+    Convencao da aba modelo 'Vendas 26_elaboracao' (Bruno 30/06): Data de
+    pagamento = Data do fechamento e Valor Pago = Valor (auto-preenchidos)."""
     p = d["properties"]
     cd = parse_closedate(p.get("closedate"))
     v = parse_brl(p.get("valor_do_aporte"))
+    data_br = fmt_date_br(cd) if cd else ""
+    valor = v if v is not None else ""
     return [
         _proponente(p),
-        fmt_date_br(cd) if cd else "",
+        data_br,
         (p.get("condicao_de_pagamento") or "").strip(),
-        v if v is not None else "",
+        valor,
         (p.get("lei_principal") or "").strip(),
-        "",  # Data de pagamento (Ricardo preenche)
-        "",  # Valor Pago (Ricardo preenche)
+        data_br,   # Data de pagamento = Data do fechamento (modelo)
+        valor,     # Valor Pago = Valor (modelo)
         f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{d['id']}",
         d["id"],
     ]
 
 
-def run_ricardo(gc, deals, write):
+def run_ricardo(gc, deals, write, rebuild=False):
     sh = gc.open_by_key(RICARDO_SHEET_ID)
     tab = RICARDO_TAB
+    if rebuild and write:
+        # uniformiza: limpa os dados (mantem titulo + header) e re-popula tudo.
+        # Seguro enquanto o Ricardo ainda nao preencheu nada manualmente.
+        ws0 = sh.worksheet(tab)
+        last_col = rowcol_to_a1(1, RIC_DEALID_IDX + 1).rstrip("1")
+        ws0.batch_clear([f"C{RIC_DATA_ROW0}:{last_col}3000"])
+        print(f"[rebuild] dados de '{tab}' (C{RIC_DATA_ROW0}:{last_col}) limpos; re-populando do zero.")
     cands = []
     for d in deals:
         cd = parse_closedate(d["properties"].get("closedate"))
@@ -444,6 +455,8 @@ def main():
     ap.add_argument("--elaboracao-mes", action="store_true", help="gerar/popular {Mes}_Elaboracao (Frente C)")
     ap.add_argument("--ricardo", action="store_true", help="tabela Elaboracao Won 2026 (Frente D)")
     ap.add_argument("--tab", default=None, help="override do nome da aba (sandbox/teste)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="Frente D: limpa os dados da tabela e re-popula do zero (uniformiza)")
     args = ap.parse_args()
 
     cycle = args.cycle or current_cycle()
@@ -473,7 +486,7 @@ def main():
         if do_elab:
             run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab)
         if do_ric:
-            run_ricardo(gc, deals, args.write)
+            run_ricardo(gc, deals, args.write, rebuild=args.rebuild)
 
     if not args.write:
         print("[dry-run] nada gravado. Use --write quando aprovado.")
