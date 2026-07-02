@@ -65,6 +65,18 @@ def hide_columns(sh, ws, start_idx, count):
     })
 
 
+def hide_sheet(sh, ws):
+    """Oculta a aba inteira (pra validacao antes de publicar)."""
+    sh.batch_update({
+        "requests": [{
+            "updateSheetProperties": {
+                "properties": {"sheetId": ws.id, "hidden": True},
+                "fields": "hidden",
+            }
+        }]
+    })
+
+
 def ensure_month_tab(sh, template_name, new_name, extra_headers, n_template_cols):
     """Garante a aba do mes. Se NAO existe: duplica o template (preserva
     formatacao), limpa os dados (linhas 2+), acrescenta extra_headers a partir
@@ -148,7 +160,7 @@ def build_match_row(r):
     return out
 
 
-def run_match_mes(sh, cycle, inc, write, tab=None):
+def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
     mes = cycle_to_mes(cycle)
     tab = tab or f"{mes}_MATCH"
     cands = select_cycle(inc, cycle)
@@ -189,6 +201,9 @@ def run_match_mes(sh, cycle, inc, write, tab=None):
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
           f"({'aba criada' if criada else 'append'}). Comissoes I-M em branco; contato/deal_id ocultos.")
+    if hidden and criada:
+        hide_sheet(sh, ws)
+        print(f"[hidden] aba '{tab}' OCULTA pra validacao (reexibir/rodar sem --hidden no dia 20).")
 
 
 # ===================================================
@@ -292,7 +307,7 @@ def _deals_no_ciclo(deals, cycle):
     return out
 
 
-def run_elaboracao_mes(sh, cycle, deals, write, tab=None):
+def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False):
     mes = cycle_to_mes(cycle)
     tab = tab or f"{mes}_Elaboração de Projetos"
     cands = _deals_no_ciclo(deals, cycle)
@@ -331,7 +346,10 @@ def run_elaboracao_mes(sh, cycle, deals, write, tab=None):
     rng = f"A{start_row}:{rowcol_to_a1(1, ELAB_TECH_IDX + 1).rstrip('1')}{end_row}"
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
-          f"({'aba criada' if criada else 'append'}). G-L manuais em branco; deal_id oculto.")
+          f"({'aba criada' if criada else 'append'}). I-L manuais em branco; deal_id oculto.")
+    if hidden and criada:
+        hide_sheet(sh, ws)
+        print(f"[hidden] aba '{tab}' OCULTA pra validacao (reexibir/rodar sem --hidden no dia 20).")
 
 
 # ---- Frente D: Tabela Elaboracao Won 2026 pro Ricardo ----
@@ -461,6 +479,8 @@ def main():
     ap.add_argument("--tab", default=None, help="override do nome da aba (sandbox/teste)")
     ap.add_argument("--rebuild", action="store_true",
                     help="Frente D: limpa os dados da tabela e re-popula do zero (uniformiza)")
+    ap.add_argument("--hidden", action="store_true",
+                    help="oculta as abas do mes recem-criadas (validacao antes de publicar dia 20)")
     args = ap.parse_args()
 
     cycle = args.cycle or current_cycle()
@@ -481,14 +501,14 @@ def main():
             raise SystemExit(f"[abort] consolidado com {len(rows)} linhas (< {MIN_ROWS_GUARD}).")
         inc, _ = split_vendas(rows)
         print(f"consolidado fonte_ts={fonte_ts} | Match Won total={len(inc)}\n")
-        run_match_mes(sh, cycle, inc, args.write, tab=args.tab)
+        run_match_mes(sh, cycle, inc, args.write, tab=args.tab, hidden=args.hidden)
 
     if do_elab or do_ric:
         token = load_hubspot_token()
         deals = search_elaboracao_won(token)
         print(f"\nHubSpot: {len(deals)} deals Proponente ganho (produtos {PRODUTOS_ELABORACAO})\n")
         if do_elab:
-            run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab)
+            run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab, hidden=args.hidden)
         if do_ric:
             run_ricardo(gc, deals, args.write, rebuild=args.rebuild)
 

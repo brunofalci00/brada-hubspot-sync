@@ -302,6 +302,20 @@ def append_rows(ws, start_row, rows):
     return rng
 
 
+def hide_rows(sh, ws, start_row, end_row):
+    """Oculta as linhas start_row..end_row (1-based) — validacao antes de publicar."""
+    sh.batch_update({
+        "requests": [{
+            "updateDimensionProperties": {
+                "range": {"sheetId": ws.id, "dimension": "ROWS",
+                          "startIndex": start_row - 1, "endIndex": end_row},
+                "properties": {"hiddenByUser": True},
+                "fields": "hiddenByUser",
+            }
+        }]
+    })
+
+
 # ===================================================
 # RELATORIO (GATE)
 # ===================================================
@@ -363,6 +377,8 @@ def main():
                     help="ignora ciclo: lista/append de TODOS os Match faltantes (catch-up; use com cuidado)")
     ap.add_argument("--force-dup", action="store_true",
                     help="grava tambem os 'provavel duplicata' (valor ja existe). NAO use sem validar.")
+    ap.add_argument("--hidden", action="store_true",
+                    help="oculta as linhas recem-appendadas (validacao antes de publicar dia 20)")
     args = ap.parse_args()
 
     cycle = args.cycle or current_cycle()
@@ -402,6 +418,10 @@ def main():
     rng = append_rows(ws, start, rows_out)
     print(f"[write] OK: {len(rows_out)} linha(s) appendada(s) em {rng}. "
           f"Linhas existentes preservadas (append puro).")
+    if args.hidden:
+        end = start + len(rows_out) - 1
+        hide_rows(sh, ws, start, end)
+        print(f"[hidden] linhas {start}-{end} OCULTAS pra validacao (reexibir no dia 20).")
     for r in a_gravar:
         print(f"   + {str(r['cliente'])[:40]:40} | R$ {parse_brl(r['valor_bruto']):>12,.2f} | deal {r['deal_id']}")
 
