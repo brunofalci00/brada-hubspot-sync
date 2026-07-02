@@ -53,7 +53,9 @@ def test_build_elaboracao_row():
     assert row[3] == "Pix pela plataforma"
     assert row[4] == 2000.0
     assert row[5] == "Rouanet"
-    for j in range(6, 12):                   # G-L manuais em branco
+    assert row[6] == "03/05/2026"            # G Data de pagamento = B Data do fechamento
+    assert row[7] == 2000.0                  # H Valor pago = E Valor
+    for j in range(8, 12):                   # I-L (OBS/Líquido/Ivan/Ricardo) em branco
         assert row[j] == "", f"manual idx{j} deve ser vazia"
     assert row[12] == "E1"                   # M deal_id
 

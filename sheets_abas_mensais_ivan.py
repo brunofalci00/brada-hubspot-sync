@@ -201,7 +201,7 @@ from sync import BASE  # "https://api.hubapi.com"
 
 PIPELINE_PROPONENTE = "839644419"
 STAGES_GANHO_PROP = ["1246571362", "1246571363", "1253441207"]  # Fechado/Ganho + 2 pos-venda
-PRODUTOS_ELABORACAO = ["Elaboração", "Prestação de Contas"]      # configuravel (Bruno confirma)
+PRODUTOS_ELABORACAO = ["Elaboração", "Prestação de Contas", "Customização"]  # Bruno 02/07
 ELAB_PROPS = ["dealname", "nome_do_proponente", "closedate", "produto", "condicao_de_pagamento",
               "valor_do_aporte", "valor_vendido", "lei_principal", "numero_do_projeto"]
 
@@ -263,7 +263,9 @@ ELAB_TECH_IDX = 12             # M
 
 
 def build_elaboracao_row(d):
-    """A-F auto (C=produto cru) + G-L manuais em branco + M deal_id."""
+    """A-F auto (C=produto cru). G Data de pagamento = B Data do fechamento e
+    H Valor pago = E Valor (convencao da modelo, uniformizada com a tabela do
+    Ricardo — Bruno 02/07). I-L manuais em branco + M deal_id."""
     p = d["properties"]
     out = [""] * (ELAB_TECH_IDX + 1)  # A-M
     out[0] = _proponente(p)
@@ -274,6 +276,8 @@ def build_elaboracao_row(d):
     v = parse_brl(p.get("valor_do_aporte"))
     out[4] = v if v is not None else ""
     out[5] = (p.get("lei_principal") or "").strip()
+    out[6] = out[1]   # G Data de pagamento = B Data do fechamento
+    out[7] = out[4]   # H Valor pago = E Valor
     out[ELAB_TECH_IDX] = d["id"]
     return out
 
