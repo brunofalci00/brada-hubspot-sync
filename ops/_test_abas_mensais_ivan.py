@@ -32,11 +32,11 @@ def test_build_match_row():
     assert row[5] == "N1"           # F
     assert row[6] == 1000.0         # G valor
     assert row[7] == "10/06/2026"   # H data
-    for j in range(8, 13):          # I-M comissoes em branco
+    assert row[8] == "Contato"      # I nome do contato do proponente (visivel)
+    assert row[9] == "119"          # J telefone do proponente (visivel)
+    assert row[10] == "a@b.com"     # K email do proponente (visivel)
+    for j in range(11, 16):         # L-P comissoes em branco
         assert row[j] == "", f"comissao idx{j} deve ser vazia"
-    assert row[13] == "Contato"     # N
-    assert row[14] == "119"         # O
-    assert row[15] == "a@b.com"     # P
     assert row[16] == "D1"          # Q deal_id
 
 

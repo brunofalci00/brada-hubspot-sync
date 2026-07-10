@@ -130,18 +130,18 @@ def read_existing(sh, tab, n_cols, tech_idx):
 # ===================================================
 
 MATCH_TEMPLATE = "Junho_MATCH"
-N_MATCH_TEMPLATE = 13                 # A-M (Cliente..Rafaela)
-MATCH_EXTRA = ["Nome do proponente", "Telefone do proponente", "E-mail do proponente", "deal_id"]
-MATCH_TECH_IDX = 16                   # Q (13 + 3 contato)
-# indices 0-based das colunas AUTO no MATCH
+N_MATCH_TEMPLATE = 16                 # A-P: A-H auto + I-K contato + L-P comissoes (todas no template)
+MATCH_EXTRA = ["deal_id"]             # unica coluna tecnica appendada e OCULTA (Q)
+MATCH_TECH_IDX = 16                   # Q (deal_id)
+# indices 0-based das colunas AUTO no MATCH (contato agora VISIVEL em I/J/K, pedido Ivan 10/07)
 MCOL = {"cliente": 0, "fonte": 1, "proponente": 2, "interno": 3, "projeto": 4,
         "numero": 5, "valor": 6, "data": 7,
-        "contato_nome": 13, "contato_tel": 14, "contato_email": 15}
+        "contato_nome": 8, "contato_tel": 9, "contato_email": 10}
 
 
 def build_match_row(r):
-    """Linha A-Q do {Mes}_MATCH. A-H + D auto; I-M (comissoes) em branco;
-    N/O/P contato; Q deal_id."""
+    """Linha A-Q do {Mes}_MATCH. A-H auto; I-K contato (visivel); L-P (comissoes)
+    em branco; Q deal_id (oculto)."""
     out = [""] * (MATCH_TECH_IDX + 1)  # A..Q
     out[MCOL["cliente"]] = r["cliente"]
     out[MCOL["fonte"]] = map_lei(r["lei_principal"])
@@ -200,7 +200,7 @@ def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
     rng = f"A{start}:{rowcol_to_a1(1, MATCH_TECH_IDX + 1).rstrip('1')}{end}"
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
-          f"({'aba criada' if criada else 'append'}). Comissoes I-M em branco; contato/deal_id ocultos.")
+          f"({'aba criada' if criada else 'append'}). Comissoes L-P em branco; contato I-K visivel; deal_id oculto.")
     if hidden and criada:
         hide_sheet(sh, ws)
         print(f"[hidden] aba '{tab}' OCULTA pra validacao (reexibir/rodar sem --hidden no dia 20).")
