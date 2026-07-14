@@ -382,21 +382,26 @@ RIC_DEALID_IDX = RIC_COL0 + len(RICARDO_HEADER) - 1   # coluna do deal_id (ocult
 def build_ricardo_row(d):
     """Linha (a partir da coluna C): Nome, Data fechamento, Condicao, Valor, Lei,
     Data de pagamento, Valor Pago, Link Hubspot, deal_id.
-    Convencao da aba modelo 'Vendas 26_elaboracao' (Bruno 30/06): Data de
-    pagamento = Data do fechamento e Valor Pago = Valor (auto-preenchidos)."""
+    Convencao da aba modelo 'Vendas 26_elaboracao' (Bruno 30/06): Data de pagamento
+    = Data do fechamento e Valor Pago = Valor. EXCECAO (Bruno 14/07): condicoes de
+    captacao ('10% vr captado') ficam com Data de pagamento/Valor Pago VAZIOS — nao
+    houve pagamento no fechamento. Mesma regra da {Mes}_Elaboracao (build_elaboracao_row)."""
     p = d["properties"]
     cd = parse_closedate(p.get("closedate"))
     v = parse_brl(p.get("valor_do_aporte"))
     data_br = fmt_date_br(cd) if cd else ""
     valor = v if v is not None else ""
+    cond = (p.get("condicao_de_pagamento") or "").strip()
+    pago_data = "" if _is_captado(cond) else data_br
+    pago_valor = "" if _is_captado(cond) else valor
     return [
         _proponente(p),
         data_br,
-        (p.get("condicao_de_pagamento") or "").strip(),
+        cond,
         valor,
         (p.get("lei_principal") or "").strip(),
-        data_br,   # Data de pagamento = Data do fechamento (modelo)
-        valor,     # Valor Pago = Valor (modelo)
+        pago_data,   # Data de pagamento = Data do fechamento (vazio se captado)
+        pago_valor,  # Valor Pago = Valor (vazio se captado)
         f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{d['id']}",
         d["id"],
     ]

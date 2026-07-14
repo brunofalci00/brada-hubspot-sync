@@ -94,6 +94,20 @@ def test_build_ricardo_row():
     assert row[8] == "R1"                                # deal_id
 
 
+def test_build_ricardo_row_captado():
+    # Frente D: '10% vr captado' -> Data de pagamento (idx5) e Valor Pago (idx6) VAZIOS
+    # (mesma regra da {Mes}_Elaboracao, Bruno 14/07). Data fechamento/Valor seguem.
+    d = {"id": "R2", "properties": {
+        "nome_do_proponente": "PropRCap", "closedate": "2026-06-30T00:00:00Z",
+        "produto": "Elaboração", "condicao_de_pagamento": "10% vr captado",
+        "valor_do_aporte": "5000", "lei_principal": "Rouanet"}}
+    row = m.build_ricardo_row(d)
+    assert row[1] == "30/06/2026"            # Data do fechamento continua
+    assert row[3] == 5000.0                  # Valor continua
+    assert row[5] == "", "Data de pagamento vazia em captacao"
+    assert row[6] == "", "Valor Pago vazio em captacao"
+
+
 def test_deals_no_ciclo():
     def mk(did, cd):
         return {"id": did, "properties": {"closedate": cd}}
