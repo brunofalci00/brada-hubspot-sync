@@ -60,6 +60,20 @@ def test_build_elaboracao_row():
     assert row[12] == "E1"                   # M deal_id
 
 
+def test_build_elaboracao_row_captado():
+    # '10% vr captado': comissao sobre o valor captado, ainda nao paga -> Data de
+    # pagamento (G) e Valor Pago (H) ficam VAZIOS (Bruno 14/07). Fechamento/Valor seguem.
+    d = {"id": "E2", "properties": {
+        "nome_do_proponente": "PropCap", "closedate": "2026-07-10T00:00:00Z",
+        "produto": "Elaboração", "condicao_de_pagamento": "10% vr captado",
+        "valor_do_aporte": "0", "lei_principal": "Rouanet"}}
+    row = m.build_elaboracao_row(d)
+    assert row[3] == "10% vr captado"
+    assert row[1] == "10/07/2026"            # B Data do fechamento continua preenchida
+    assert row[6] == "", "G Data de pagamento vazia em condicao de captacao"
+    assert row[7] == "", "H Valor Pago vazio em condicao de captacao"
+
+
 def test_build_ricardo_row():
     # layout "Vendas 26_elaboracao" (a partir da col C): Nome, Data fechamento,
     # Condicao, Valor, Lei, Data pagamento, Valor Pago, Link Hubspot, deal_id.

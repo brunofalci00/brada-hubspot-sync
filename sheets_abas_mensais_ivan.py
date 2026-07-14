@@ -277,22 +277,34 @@ ELAB_EXTRA = ["deal_id"]
 ELAB_TECH_IDX = 12             # M
 
 
+def _is_captado(condicao):
+    """Condicao baseada em captacao (ex.: '10% vr captado'): comissao sobre o valor
+    CAPTADO, que so acontece depois. Nesses casos NAO ha pagamento no fechamento, entao
+    Data de pagamento e Valor Pago ficam vazios. Substring 'captado' cobre qualquer % ."""
+    return "captado" in (condicao or "").strip().lower()
+
+
 def build_elaboracao_row(d):
-    """A-F auto (C=produto cru). G Data de pagamento = B Data do fechamento e
-    H Valor pago = E Valor (convencao da modelo, uniformizada com a tabela do
-    Ricardo — Bruno 02/07). I-L manuais em branco + M deal_id."""
+    """A-F auto (C=produto cru). I-L manuais em branco + M deal_id.
+    G Data de pagamento e H Valor pago: por padrao repetem B Data do fechamento e E
+    Valor (deal quitado no fechamento). EXCECAO: condicoes de captacao ('10% vr captado')
+    ficam VAZIAS — nao ha pagamento ate a captacao acontecer (Bruno 14/07, refina a
+    convencao de 02/07 que copiava sempre)."""
     p = d["properties"]
     out = [""] * (ELAB_TECH_IDX + 1)  # A-M
     out[0] = _proponente(p)
     cd = parse_closedate(p.get("closedate"))
     out[1] = fmt_date_br(cd) if cd else ""
     out[2] = _produto_cru(p.get("produto"))
-    out[3] = (p.get("condicao_de_pagamento") or "").strip()
+    cond = (p.get("condicao_de_pagamento") or "").strip()
+    out[3] = cond
     v = parse_brl(p.get("valor_do_aporte"))
     out[4] = v if v is not None else ""
     out[5] = (p.get("lei_principal") or "").strip()
-    out[6] = out[1]   # G Data de pagamento = B Data do fechamento
-    out[7] = out[4]   # H Valor pago = E Valor
+    if not _is_captado(cond):
+        out[6] = out[1]   # G Data de pagamento = B Data do fechamento
+        out[7] = out[4]   # H Valor pago = E Valor
+    # captado: G/H vazios (pagamento so na captacao)
     out[ELAB_TECH_IDX] = d["id"]
     return out
 
