@@ -61,12 +61,6 @@ PRE_MATCH_STAGES_INCENTIVADOR = {
 # planilha MATCH); closedate-pre-match captura o erro tipo Jaque que infla o funil.
 # Gap 17 (S3 27/06): percentual_brada (% real Brada) — so cobra deals JA classificados
 # (tipo preenchido); sem %, o consolidado usa fallback 10/15. Ver Achado_Percentual_Real_Match_27jun.
-# S2.4 (Bruno × Rafa 22/06): espelho de sync.py.POS_VENDA_OWNERS_BLACKLIST.
-# Owners cujos cards em pós-venda são duplicatas organizacionais, NÃO vendas reais.
-# Esses cards NÃO disparam gaps 2/3 (closedate, valor_do_aporte). Manter sincronizado.
-POS_VENDA_OWNERS_BLACKLIST = {
-    "86273315",  # Rafaela Barbosa (match.projetos@brada.social)
-}
 
 TIPOS_VENDA = {
     "2. Ganho sem closedate",
@@ -125,8 +119,10 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
 
     Filtro: gaps de Company so se Company tem >=1 deal associado (decisao Bruno 27/04).
     Companies em overrides_ivan_companies.csv pulam gaps 8/10/11 (cobertos pelo gap 13).
-    S2.4: gaps 2/3 NAO disparam pra cards-zumbis (owner in POS_VENDA_OWNERS_BLACKLIST
-    AND stage in pos_venda_stages) — duplicatas organizacionais da pós-venda.
+    S2.6 (Bruno 16/07): cards em estagio de pos-venda (stage in pos_venda_stages, os 5
+    estagios APOS o ganho nos 2 pipelines) NAO geram nenhuma flag de deal, para todos os
+    owners. Ja venderam — o preenchimento nao e cobranca do comercial nesse ponto.
+    (Generaliza a S2.4, que era so owner=Rafa + gaps 2/3.)
     """
     gaps = []
     overrides_ivan = _load_overrides_ivan()
@@ -160,12 +156,16 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
     for d in deals:
         p = d.get("properties", {}) or {}
         did = d["id"]
+        # S2.6 (Bruno 16/07): cards em pos-venda (estagios APOS o ganho, nos 2 pipelines)
+        # nao geram NENHUMA flag de deal — ja venderam, o preenchimento nao e cobranca do
+        # comercial nesse ponto. Generaliza a S2.4 (era so owner=Rafa + gaps 2/3) pra todos.
+        if p.get("dealstage", "") in _pos_venda:
+            continue
         dname = p.get("dealname", "") or "(sem nome)"
         owner_id = p.get("hubspot_owner_id", "") or ""
         owner_nome = owners.get(owner_id, "(sem owner)")
         is_ganho = p.get("dealstage", "") in ganho_stages
         is_perdido = p.get("dealstage", "") in perdido_stages
-        is_zumbi = owner_id in POS_VENDA_OWNERS_BLACKLIST and p.get("dealstage", "") in _pos_venda
 
         # 1. deal sem company
         if did not in deal_to_company:
@@ -175,23 +175,21 @@ def compute_gaps(deals, companies, deal_to_company, owners, ganho_stages, perdid
                          "prioridade": "ALTA" if is_ganho else "MEDIA"})
 
         if is_ganho:
-            # S2.4: gaps 2 e 3 (closedate, valor_do_aporte) NAO se aplicam a zumbis Rafa pós-venda.
-            # gaps 4-6 (lei, proponente, projeto) continuam disparando — KPIs organizacionais.
-            if not is_zumbi:
-                # 2. ganho sem closedate
-                if not (p.get("closedate") or "").strip():
-                    gaps.append({"owner_nome": owner_nome, "tipo": "2. Ganho sem closedate",
-                                 "entidade": "Deal", "id": did, "nome": dname,
-                                 "link": deal_link(did),
-                                 "descricao": "Preencher data de fechamento",
-                                 "prioridade": "ALTA"})
-                # 3. ganho sem aporte
-                if _num(p.get("valor_do_aporte")) <= 0:
-                    gaps.append({"owner_nome": owner_nome, "tipo": "3. Ganho sem valor_do_aporte",
-                                 "entidade": "Deal", "id": did, "nome": dname,
-                                 "link": deal_link(did),
-                                 "descricao": "Preencher valor que entrou (R$ vendido pra essa lei)",
-                                 "prioridade": "ALTA"})
+            # is_ganho aqui = ganho REAL (pos-venda ja foi pulada no topo do loop, S2.6).
+            # 2. ganho sem closedate
+            if not (p.get("closedate") or "").strip():
+                gaps.append({"owner_nome": owner_nome, "tipo": "2. Ganho sem closedate",
+                             "entidade": "Deal", "id": did, "nome": dname,
+                             "link": deal_link(did),
+                             "descricao": "Preencher data de fechamento",
+                             "prioridade": "ALTA"})
+            # 3. ganho sem aporte
+            if _num(p.get("valor_do_aporte")) <= 0:
+                gaps.append({"owner_nome": owner_nome, "tipo": "3. Ganho sem valor_do_aporte",
+                             "entidade": "Deal", "id": did, "nome": dname,
+                             "link": deal_link(did),
+                             "descricao": "Preencher valor que entrou (R$ vendido pra essa lei)",
+                             "prioridade": "ALTA"})
             # 4. ganho sem lei principal
             if not (p.get("lei_principal") or "").strip():
                 leis_vals = [(l, _num(p.get(l))) for l in LEIS]
