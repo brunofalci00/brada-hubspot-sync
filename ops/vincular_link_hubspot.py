@@ -36,7 +36,7 @@ from gspread.utils import rowcol_to_a1
 from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import load_consolidado, parse_brl, parse_closedate
 from financeiro_match_common import (
-    PORTAL_ID, forca_do_nome, linha_e_dado, money, norm, select_match_won, text_id,
+    MARCA_BUSCA, PORTAL_ID, forca_do_nome, link_busca, linha_e_dado, money, norm, select_match_won, text_id,
 )
 from sheets_abas_mensais_ivan import (
     OFICIAL_ID_DEFAULT, load_hubspot_token, resolver_proponentes, search_elaboracao_won, _proponente,
@@ -62,16 +62,6 @@ def com_retry(fn, *a, **kw):
             espera = 4 * tentativa
             print(f"  [retry {tentativa}/4] {str(erro)[:70]} — nova tentativa em {espera}s")
             time.sleep(espera)
-
-
-def link_negocio(deal_id):
-    return f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{deal_id}"
-
-
-def link_busca(nome):
-    """Lista de negocios ja filtrada pelo nome. Para linha sem candidato."""
-    q = urllib.parse.quote(str(nome or "").strip())
-    return f"https://app.hubspot.com/contacts/{PORTAL_ID}/objects/0-3/views/all/list?query={q}"
 
 
 def data_da_celula(v):
@@ -228,12 +218,20 @@ def main():
             nome = str(linha[ch["cliente"]]).strip()
             if not linha_e_dado(nome):
                 continue
-            if str(linha[col_link]).strip():
+            atual_link = str(linha[col_link]).strip()
+            # Link de NEGOCIO e resultado de casamento conferido: nunca se toca.
+            # Link de BUSCA e derivado do nome, entao recalcular e legitimo — foi
+            # assim que "MedWrites Editora / RMed / Asia" virou busca por
+            # "MedWrites Editora", que acha alguma coisa.
+            if atual_link and MARCA_BUSCA not in atual_link:
+                total["JA_TEM"] += 1
+                continue
+            if atual_link and MARCA_BUSCA in atual_link and atual_link == link_busca(nome):
                 total["JA_TEM"] += 1
                 continue
             did = str(linha[col_tech]).strip() if col_tech is not None else ""
             if did:
-                pendentes.append((n, link_negocio(did)))
+                pendentes.append((n, deal_link({"deal_id": did})))
                 total["ALTA"] += 1
                 linhas_relat.append(("ALTA", n, nome, f"deal {did} (id na aba)"))
                 continue
@@ -258,7 +256,7 @@ def main():
                 if nivel == "MEDIA":
                     rot += "  <- conferir antes de usar"
                 if nivel == "ALTA":
-                    pendentes.append((n, link_negocio(d["deal_id"])))
+                    pendentes.append((n, deal_link(d)))
                 linhas_relat.append((nivel, n, nome, rot))
 
         print("=" * 112)

@@ -194,6 +194,24 @@ def test_deal_link_usa_o_formato_atual():
     assert "/deal/" not in url
 
 
+def test_termo_de_busca_usa_so_o_primeiro_nome():
+    """A coluna CLIENTE mistura cliente com linha de imposto, com data e com
+    outros clientes. Buscar a string inteira devolve zero resultado, e busca que
+    nao acha nada e quase tao inutil quanto celula vazia."""
+    assert common.termo_de_busca("MedWrites Editora / RMed Cursos Médicos / Asia") == "MedWrites Editora"
+    assert common.termo_de_busca("Real Pax / ISS") == "Real Pax"
+    assert common.termo_de_busca("MARSH" + chr(13) + chr(10) + "JC RISCOS " + chr(13) + chr(10) + "BOMDINHO") == "MARSH"
+    # nome simples passa inteiro
+    assert common.termo_de_busca("Nu Bank") == "Nu Bank"
+    assert common.termo_de_busca("Fórum Celint") == "Fórum Celint"
+    # primeiro pedaco curto demais nao serve de busca: devolve a celula inteira
+    assert common.termo_de_busca("A / Fundacao Grande") == "A / Fundacao Grande"
+    # o link sai marcado como busca, para dar para distinguir de link de negocio
+    url = common.link_busca("Nu Bank")
+    assert common.MARCA_BUSCA in url and "Nu%20Bank" in url
+    assert common.MARCA_BUSCA not in common.deal_link({"deal_id": "1"})
+
+
 def test_linha_e_dado_descarta_somatorio():
     """A linha de Total das abas de Elaboracao casava com um negocio no
     prototipo. Descartar antes de comparar sai mais barato que desfazer."""

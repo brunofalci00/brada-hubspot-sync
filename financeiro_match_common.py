@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import unicodedata
+import urllib.parse
 from collections import defaultdict
 
 from sheets_reporting_financeiro_mensal import parse_brl, parse_closedate, cycle_window
@@ -64,6 +65,31 @@ def deal_link(row):
     alguem achar que um deles esta quebrado.
     """
     return f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{str(row.get('deal_id', '')).strip()}"
+
+
+MARCA_BUSCA = "/views/all/list?query="
+
+
+def termo_de_busca(nome):
+    """So o primeiro nome da celula, para a busca achar alguma coisa.
+
+    A coluna CLIENTE mistura coisas: "Real Pax / ISS" (cliente + linha de imposto),
+    "SEEL 08/08/25" (cliente + data), "MedWrites Editora / RMed Cursos Medicos /
+    Asia" (tres clientes) e uma celula com tres nomes em linhas separadas. Buscar a
+    string inteira devolve zero resultado, e busca que nao acha nada e quase tao
+    inutil quanto celula vazia, que era justamente o que esta coluna existe para
+    evitar.
+    """
+    bruto = str(nome or "").replace(chr(13), chr(10))
+    primeiro = bruto.split(chr(10))[0].split("/")[0].strip()
+    return primeiro if len(primeiro) >= 3 else bruto.strip()
+
+
+def link_busca(nome):
+    """Lista de negocios ja filtrada pelo nome. Para linha sem candidato."""
+    q = urllib.parse.quote(termo_de_busca(nome))
+    return (f"https://app.hubspot.com/contacts/{PORTAL_ID}/objects/0-3"
+            f"{MARCA_BUSCA}{q}")
 
 
 def is_match_won(row):
