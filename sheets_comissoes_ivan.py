@@ -17,6 +17,8 @@ from financeiro_match_common import (
     digits as _digits, interno_externo, money, norm as _norm, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
+from hubspot_financeiro import enriquecer as enriquecer_financeiras
+
 OFICIAL_ID_DEFAULT = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"
 CV_WS = "Controle de Vendas"
 HEADER = [
@@ -147,6 +149,10 @@ def main():
     if len(source) < MIN_ROWS_GUARD:
         raise SystemExit(f"[abort] consolidado parcial: {len(source)} < {MIN_ROWS_GUARD}")
     all_deals = select_match_won(source)
+    # As 4 properties financeiras nao existem no consolidado de producao; a coluna
+    # CONDICOES sai delas. Mesma fonte que a aba da Bia usa, para as duas nao
+    # divergirem. Ver hubspot_financeiro.
+    enriquecer_financeiras(all_deals)
     cycle_deals = select_cycle(all_deals, cycle, all_pending=args.all_pending)
     sh = gc.open_by_key(args.sheet_id)
     ws = sh.worksheet(args.ws)

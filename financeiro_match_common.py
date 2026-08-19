@@ -277,6 +277,38 @@ def reconcile(existing, deals, schema):
     return matches, ambiguous, unmatched
 
 
+def numeric_render_repairs(old, new, text_indices):
+    """Celulas de coluna TEXTUAL que o Sheets guardou como NUMERO.
+
+    CNPJ, numero de contrato e numero de projeto sao identificadores, nao
+    quantidades. Escritos com USER_ENTERED, o Sheets os interpreta como numero e
+    o zero a esquerda evapora: 08316498000108 virou 8316498000108 e
+    01137526000180 virou 1137526000180 na carga de 19/08. CNPJ com 13 digitos
+    nao serve para emitir nota.
+
+    Devolve so os casos em que os digitos SIGNIFICATIVOS batem, ou seja, dano de
+    renderizacao. Se o conteudo for diferente de verdade, nao entra aqui: isso e
+    divergencia de dado e vai para divergent_cells, sem sobrescrever nada.
+    """
+    saida = []
+    width = max(len(old), len(new))
+    old = list(old) + [""] * (width - len(old))
+    new = list(new) + [""] * (width - len(new))
+    for idx in text_indices:
+        atual, alvo = old[idx], new[idx]
+        if str(atual).strip() == "" or str(alvo).strip() == "":
+            continue
+        if isinstance(atual, str):
+            continue                       # ja esta como texto: nada a reparar
+        canonico = str(alvo).strip()       # o HubSpot devolve varios com espaco no fim
+        if str(atual) == canonico:
+            continue                       # guardado como numero, mas sem perda
+        a, b = digits(atual).lstrip("0"), digits(canonico).lstrip("0")
+        if a and a == b:
+            saida.append((idx, atual, canonico))
+    return saida
+
+
 def text_id(value):
     if value in (None, ""):
         return ""

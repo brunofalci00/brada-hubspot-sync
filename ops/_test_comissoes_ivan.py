@@ -164,6 +164,25 @@ def test_bia_layout_and_manuals():
         assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
 
 
+def test_reparo_de_identificador_virado_numero():
+    """CNPJ, contrato e numero de projeto sao identificadores. Guardados como
+    numero pelo Sheets, perdem o zero a esquerda — aconteceu de verdade na carga
+    de 19/08 com 08316498000108 e 01137526000180."""
+    planilha = [8316498000108, "X", 26989067000194]
+    hubspot = ["08316498000108", "Y", "26989067000194"]
+    rep = common.numeric_render_repairs(planilha, hubspot, [0, 2])
+    assert rep == [(0, 8316498000108, "08316498000108")]
+    # conteudo realmente diferente NAO e reparo, e divergencia
+    assert common.numeric_render_repairs([123], ["456"], [0]) == []
+    # celula vazia de um lado nao e reparo, e lacuna
+    assert common.numeric_render_repairs(["", 1], ["1", ""], [0, 1]) == []
+    # numero sem perda de zero nao precisa de reparo, mesmo com espaco sobrando
+    # no valor do HubSpot (varios numeros de projeto vem assim)
+    assert common.numeric_render_repairs([2317455], ["2317455    "], [0]) == []
+    # celula que ja e texto nunca e reparada
+    assert common.numeric_render_repairs(["08316498000108"], ["8316498000108"], [0]) == []
+
+
 def test_freshness():
     now = dt.datetime(2026, 8, 6, 18, 0, tzinfo=dt.timezone.utc)
     # marca explicita de fuso manda

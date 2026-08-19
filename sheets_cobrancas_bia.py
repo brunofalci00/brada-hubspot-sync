@@ -13,7 +13,7 @@ from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import MIN_ROWS_GUARD, current_cycle, fmt_date_br, load_consolidado, map_lei, parse_closedate
 from financeiro_match_common import (
     assert_fresh_source, blocking_gaps, changed_cells, completeness_gaps, deal_link, document_label,
-    divergent_cells,
+    divergent_cells, numeric_render_repairs,
     digits, integer_at_least_one, interno_externo, money, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
@@ -52,6 +52,10 @@ AUTO = {
 }
 MANUAIS_DA_BIA = {2: "Segmento Cultural", 12: "VALOR A COBRAR", 15: "Data de cobrança",
                   19: "Data do ultimo contato", 20: "resposta"}
+# Identificadores, nao quantidades: se o Sheets guardar como numero, some o zero
+# a esquerda e o CNPJ deixa de servir para emitir nota. Formatadas como TEXTO
+# antes de qualquer escrita.
+COLUNAS_TEXTO = (AUTO["cnpj"], AUTO["contrato"], AUTO["numero"])
 SCHEMA = {"cliente": 0, "projeto": 9, "numero": 10, "valor": 11, "data": 14, "tech": TECH_IDX}
 AUTO_INDICES = sorted(AUTO.values())
 
@@ -106,6 +110,17 @@ def build_row(deal):
     return out
 
 
+def garantir_colunas_texto(sh, ws):
+    """Forca formato TEXTO nas colunas de identificador. Idempotente."""
+    sh.batch_update({"requests": [
+        {"repeatCell": {
+            "range": {"sheetId": ws.id, "startColumnIndex": idx, "endColumnIndex": idx + 1},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }} for idx in COLUNAS_TEXTO
+    ]})
+
+
 def ensure_tech(sh, ws):
     ws.update([[TECH_HEADER]], f"{TECH_A1}1", value_input_option="USER_ENTERED")
     sh.batch_update({"requests": [{"updateDimensionProperties": {
@@ -156,7 +171,7 @@ def main():
     cycle_ids = {str(d["deal_id"]) for d in cycle_deals}
     to_append = [d for d in unmatched if str(d["deal_id"]) in cycle_ids]
 
-    changes, bloqueados, a_preencher, divergencias = [], [], [], []
+    changes, bloqueados, a_preencher, divergencias, reparos = [], [], [], [], []
     for match in matches:
         deal, record = match["deal"], match["row"]
         travas = blocking_gaps(deal)
@@ -176,7 +191,15 @@ def main():
         for idx, old, value in changed_cells(record["cells"], new, AUTO_INDICES, norm,
                                              only_fill_blanks=True):
             changes.append((record["row_number"], idx, old, value, deal))
+        # Dano de renderizacao (identificador guardado como numero) e conserto, nao
+        # sobrescrita: os digitos significativos sao os mesmos.
+        for idx, old, value in numeric_render_repairs(record["cells"], new, COLUNAS_TEXTO):
+            changes.append((record["row_number"], idx, old, value, deal))
+            reparos.append((record["row_number"], idx, old, value))
+        reparados = {r[1] for r in numeric_render_repairs(record["cells"], new, COLUNAS_TEXTO)}
         for idx, old, value in divergent_cells(record["cells"], new, AUTO_INDICES, norm):
+            if idx in reparados:
+                continue
             divergencias.append((record["row_number"], idx, old, value, deal))
     append_ok = []
     for deal in to_append:
@@ -194,7 +217,8 @@ def main():
           f"(anteriores ignorados: {fora_do_ano}) | com alguma property financeira: {com_financeiras}")
     print(f"existentes={len(state['records'])} matches={len(matches)} ambiguos={len(ambiguous)} "
           f"updates={len(changes)} append={len(append_ok)} bloqueados={len(bloqueados)} "
-          f"com_lacuna_preenchivel={len(a_preencher)} divergencias_preservadas={len(divergencias)}")
+          f"com_lacuna_preenchivel={len(a_preencher)} divergencias_preservadas={len(divergencias)} "
+          f"reparos_de_texto={len(reparos)}")
     print("preservadas (manuais da Bia): " + ", ".join(MANUAIS_DA_BIA.values()))
     for item in ambiguous:
         print(f"[AMBIGUO] linha {item['row']['row_number']}: {[d['deal_id'] for d in item['candidates']]}")
@@ -202,6 +226,9 @@ def main():
         print(f"[BLOQUEADO] linha={row or 'nova'} deal={deal['deal_id']} faltam={','.join(gaps)} {deal_link(deal)}")
     for deal, gaps, row in a_preencher:
         print(f"[LACUNA] linha={row or 'nova'} deal={deal['deal_id']} vazias={','.join(gaps)} {deal_link(deal)}")
+    for row, idx, old, value in reparos:
+        print(f"[REPARO] {rowcol_to_a1(row, idx+1)} ({HEADER[idx]}) {old!r} -> {value!r} "
+              "— identificador estava guardado como numero")
     for row, idx, old, value, deal in divergencias:
         print(f"[DIVERGE] {rowcol_to_a1(row, idx+1)} ({HEADER[idx]}) planilha={old!r} "
               f"hubspot={value!r} deal={deal['deal_id']} — nao sobrescrito")
@@ -213,6 +240,7 @@ def main():
         return
     assert_fresh_source(source_ts)
     ensure_tech(sh, ws)
+    garantir_colunas_texto(sh, ws)
     if changes:
         ws.batch_update([{"range": rowcol_to_a1(row, idx + 1), "values": [[value]]}
                          for row, idx, _old, value, _deal in changes], value_input_option="USER_ENTERED")
