@@ -241,7 +241,9 @@ PIPELINE_PROPONENTE = "839644419"
 STAGES_GANHO_PROP = ["1246571362", "1246571363", "1253441207"]  # Fechado/Ganho + 2 pos-venda
 PRODUTOS_ELABORACAO = ["Elaboração", "Prestação de Contas", "Customização"]  # Bruno 02/07
 ELAB_PROPS = ["dealname", "nome_do_proponente", "closedate", "produto", "condicao_de_pagamento",
-              "valor_do_aporte", "valor_vendido", "lei_principal", "numero_do_projeto"]
+              "valor_do_aporte", "valor_vendido", "lei_principal", "numero_do_projeto",
+              # o proponente de verdade e a EMPRESA associada, nao nome_do_proponente
+              "hs_primary_associated_company"]
 
 
 def load_hubspot_token():
@@ -289,8 +291,52 @@ def _produto_cru(v):
     return str(v or "").strip()
 
 
+CHAVE_EMPRESA = "_empresa_associada"   # preenchida por resolver_proponentes
+
+
+def resolver_proponentes(deals, token):
+    """Anota em cada deal o nome da EMPRESA associada, que e o proponente de verdade.
+
+    `nome_do_proponente` NAO serve: foi backfillada do `dealname` em 22/06 e o que ficou la e o
+    nome do PROJETO. Nos deals antigos o dealname por acaso era o proponente, entao a maioria
+    das linhas parecia certa; nos deals criados depois do backfill, nao. Medido em 19/08 na
+    tabela do Ricardo: 23 de 34 batiam e 5 traziam o projeto, e os 5 eram justamente os mais
+    recentes ("Gauchos GAMES" no lugar de Epopeia, "Caminhos do Tenis" no lugar de Associacao
+    Encaminhando).
+
+    Fallback para `nome_do_proponente` quando o card nao tem empresa vinculada (6 dos 34 hoje):
+    nesses o nome do projeto e o unico dado que existe, e e o que o Ivan ja digita a mao.
+
+    Prova de regressao em [[feedback_nome_do_proponente_e_o_projeto]]: contra a aba que o Ivan
+    preenche a mao, 11 de 11 linhas e 8 de 8 nomes.
+    """
+    ids = {(d["properties"].get("hs_primary_associated_company") or "").strip() for d in deals}
+    ids.discard("")
+    nomes = {}
+    if ids:
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        alvo = sorted(ids)
+        for i in range(0, len(alvo), 100):
+            payload = {"properties": ["name"], "inputs": [{"id": c} for c in alvo[i:i + 100]]}
+            resp = requests.post(f"{BASE}/crm/v3/objects/companies/batch/read",
+                                 headers=headers, json=payload, timeout=30)
+            if resp.status_code not in (200, 207):
+                raise SystemExit(f"[abort] HubSpot companies batch/read {resp.status_code}: {resp.text[:300]}")
+            for item in resp.json().get("results", []):
+                nomes[str(item["id"])] = (item["properties"].get("name") or "").strip()
+    com_empresa = 0
+    for d in deals:
+        cid = (d["properties"].get("hs_primary_associated_company") or "").strip()
+        nome = nomes.get(cid, "")
+        d["properties"][CHAVE_EMPRESA] = nome
+        if nome:
+            com_empresa += 1
+    return com_empresa
+
+
 def _proponente(p):
-    return (p.get("nome_do_proponente") or p.get("dealname") or "").strip()
+    """Nome do proponente: empresa associada, com fallback. Ver resolver_proponentes."""
+    return (p.get(CHAVE_EMPRESA) or p.get("nome_do_proponente") or p.get("dealname") or "").strip()
 
 
 # ---- Frente C: {Mes}_Elaboracao de Projetos ----
@@ -556,7 +602,10 @@ def main():
     if do_elab or do_ric:
         token = load_hubspot_token()
         deals = search_elaboracao_won(token)
-        print(f"\nHubSpot: {len(deals)} deals Proponente ganho (produtos {PRODUTOS_ELABORACAO})\n")
+        com_empresa = resolver_proponentes(deals, token)
+        print(f"\nHubSpot: {len(deals)} deals Proponente ganho (produtos {PRODUTOS_ELABORACAO})")
+        print(f"  proponente pela empresa associada: {com_empresa} | "
+              f"por fallback (card sem empresa): {len(deals) - com_empresa}\n")
         if do_elab:
             run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab, hidden=args.hidden,
                                aba_vazia=args.aba_vazia)

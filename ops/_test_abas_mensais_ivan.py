@@ -40,6 +40,29 @@ def test_build_match_row():
     assert row[16] == "D1"          # Q deal_id
 
 
+def test_proponente_vem_da_empresa_associada():
+    """A empresa associada e o proponente de verdade. `nome_do_proponente` foi
+    backfillada do `dealname` em 22/06 e guarda o nome do PROJETO — em 19/08, 5 das
+    34 linhas da tabela do Ricardo mostravam projeto no lugar do proponente, e eram
+    justamente as mais recentes."""
+    com_empresa = {m.CHAVE_EMPRESA: "Epopeia Desenvolvedora de Jogos",
+                   "nome_do_proponente": "Gauchos GAMES", "dealname": "Gauchos GAMES - Deal"}
+    assert m._proponente(com_empresa) == "Epopeia Desenvolvedora de Jogos"
+    # card sem empresa vinculada: cai no nome do projeto, que e o unico dado que existe
+    sem_empresa = {m.CHAVE_EMPRESA: "", "nome_do_proponente": "GameJamPlus",
+                   "dealname": "GameJamPlus - Deal"}
+    assert m._proponente(sem_empresa) == "GameJamPlus"
+    # sem nenhum dos dois, sobra o dealname
+    assert m._proponente({m.CHAVE_EMPRESA: "", "nome_do_proponente": "",
+                          "dealname": "Novo(a) Deal"}) == "Novo(a) Deal"
+    # a empresa entra na linha gerada, nao so na funcao
+    d = {"id": "E9", "properties": dict(com_empresa, closedate="2026-07-23T00:00:00Z",
+                                        produto="Elaboração", condicao_de_pagamento="10% vr captado",
+                                        valor_do_aporte="0", lei_principal="Rouanet")}
+    assert m.build_elaboracao_row(d)[0] == "Epopeia Desenvolvedora de Jogos"
+    assert m.build_ricardo_row(d)[0] == "Epopeia Desenvolvedora de Jogos"
+
+
 def test_build_elaboracao_row():
     d = {"id": "E1", "properties": {
         "nome_do_proponente": "PropE", "closedate": "2026-05-03T00:00:00Z",

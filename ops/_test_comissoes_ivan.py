@@ -164,6 +164,30 @@ def test_bia_layout_and_manuals():
         assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
 
 
+def test_mesma_entidade_nao_corrige_nome_abreviado():
+    """Casos reais medidos em 19/08 nas abas de Elaboracao."""
+    # mesmo proponente, escrito mais curto pelo Ivan: NAO sobrescrever
+    assert common.mesma_entidade("EGP BRASIL", "ESCRITORIO DE GERENCIAMENTO DE PROJETOS DO BRASIL - EGP")
+    assert common.mesma_entidade("Encaminhando", "Associação Encaminhando")
+    assert common.mesma_entidade("PLUG AND PLUS", "PLUG AND PLUS EDUCACAO LTDA")
+    assert common.mesma_entidade("STARTUP GRID", "STARTUP GRID COWORKING E ACELERACAO LTDA")
+    # palavra inserida no meio: substring falha, token nao
+    assert common.mesma_entidade("Acelera Indie Plus LTDA", "ACELERA INDIE PLUS TREINAMENTOS LTDA")
+    # o mais longo esta na planilha e o curto no cadastro: sobrescrever perderia dado
+    assert common.mesma_entidade("Escola de Dança Missao Intensidade", "Missao Intensidade")
+    assert common.mesma_entidade("Instituto Serra dos Órgãos - Novo(a) Deal", " Instituto Serra dos Órgãos")
+    # nome de PROJETO no lugar do proponente: entidades diferentes, corrigir
+    assert not common.mesma_entidade("Gaúchos GAMES", "Epopeia Desenvolvedora de Jogos Eletronicos")
+    assert not common.mesma_entidade("Caminhos do Tenis", "Associação Encaminhando")
+    assert not common.mesma_entidade("Carioca Matsuri ICMS", "CEMAFER PRODUÇÕES LTDA")
+    assert not common.mesma_entidade("Florescer Financeiro", "ZENEG")
+    assert not common.mesma_entidade("Olimpiadas Conexão (Conectados do Bem)",
+                                     "ACELERA INDIE PLUS TREINAMENTOS LTDA")
+    # vazio nunca casa
+    assert not common.mesma_entidade("", "ZENEG")
+    assert not common.mesma_entidade("ZENEG", "")
+
+
 def test_reparo_de_identificador_virado_numero():
     """CNPJ, contrato e numero de projeto sao identificadores. Guardados como
     numero pelo Sheets, perdem o zero a esquerda — aconteceu de verdade na carga

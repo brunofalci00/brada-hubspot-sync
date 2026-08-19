@@ -277,6 +277,45 @@ def reconcile(existing, deals, schema):
     return matches, ambiguous, unmatched
 
 
+# Palavras que nao ajudam a identificar empresa: preposicao e sufixo societario.
+# "Acelera Indie Plus LTDA" e "ACELERA INDIE PLUS TREINAMENTOS LTDA" sao a mesma
+# coisa; o que decide sao os tokens de conteudo.
+_RUIDO_RAZAO_SOCIAL = {
+    "de", "da", "do", "das", "dos", "e", "em", "a", "o", "as", "os",
+    "ltda", "me", "epp", "eireli", "sa", "s", "cia", "the",
+}
+
+
+def mesma_entidade(a, b):
+    """Os dois textos nomeiam a MESMA empresa, so escrita de jeito diferente?
+
+    Existe para nao "corrigir" o que um humano escreveu melhor. O Ivan digita
+    "EGP BRASIL", "Encaminhando", "PLUG AND PLUS"; o cadastro tem
+    "ESCRITORIO DE GERENCIAMENTO DE PROJETOS DO BRASIL - EGP",
+    "Associacao Encaminhando", "PLUG AND PLUS EDUCACAO LTDA". Sobrescrever so deixa
+    a planilha mais feia, e em "Escola de Danca Missao Intensidade" -> "Missao
+    Intensidade" chega a PERDER informacao.
+
+    O caso que importa e outro: o campo trazer o nome do PROJETO, que e outra
+    entidade ("Gauchos GAMES" onde o proponente e a Epopeia). Ai vale sobrescrever.
+
+    Criterio: um contido no outro, ou todos os tokens de conteudo do mais curto
+    presentes no mais longo. Substring sozinho nao basta, porque "Acelera Indie
+    Plus LTDA" nao e substring de "ACELERA INDIE PLUS TREINAMENTOS LTDA".
+    """
+    x, y = norm(a), norm(b)
+    if not x or not y:
+        return False
+    if x in y or y in x:
+        return True
+    tx = {t for t in x.split() if len(t) > 2 and t not in _RUIDO_RAZAO_SOCIAL}
+    ty = {t for t in y.split() if len(t) > 2 and t not in _RUIDO_RAZAO_SOCIAL}
+    if not tx or not ty:
+        return False
+    menor, maior = (tx, ty) if len(tx) <= len(ty) else (ty, tx)
+    return menor <= maior
+
+
 def numeric_render_repairs(old, new, text_indices):
     """Celulas de coluna TEXTUAL que o Sheets guardou como NUMERO.
 
