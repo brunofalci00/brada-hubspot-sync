@@ -34,10 +34,16 @@ HEADER = [
 TECH_IDX = 31  # AF
 TECH_A1 = "AF"
 TECH_HEADER = "hubspot_deal_id"
+# Link do negocio no HubSpot, ultima coluna. O financeiro abre daqui para ver
+# recibo e anexo, que nao cabem na planilha. Sem isto a planilha e um beco sem
+# saida: da o numero, nao da o caminho de volta para a origem.
+HEADER_LINK = "Link HubSpot"
+LINK_IDX = 26   # AA, primeira livre depois do bloco visivel A:Z
+
 AUTO = {
     "cliente": 0, "fonte": 1, "contato": 2, "telefone": 3, "email": 4,
     "proponente": 5, "projeto": 6, "numero": 7, "valor": 10, "data": 11,
-    "condicoes": 14, "interno": 15, "tech": TECH_IDX,
+    "condicoes": 14, "interno": 15, "link": LINK_IDX, "tech": TECH_IDX,
 }
 SCHEMA = {k: AUTO[k] for k in ("cliente", "projeto", "numero", "valor", "data", "tech")}
 AUTO_INDICES = sorted(AUTO.values())
@@ -90,6 +96,7 @@ def build_row(deal, row_number=None):
     out[AUTO["data"]] = fmt_date_br(deal.get("_date")) if deal.get("_date") else fmt_date_br(parse_closedate(deal.get("closedate", "")))
     out[AUTO["condicoes"]] = deal.get("condicoes_pagamento_financeiro", "")
     out[AUTO["interno"]] = interno_externo(deal)
+    out[AUTO["link"]] = deal_link(deal)
     out[TECH_IDX] = str(deal.get("deal_id", ""))
     if row_number:
         out[16] = f'=IF(P{row_number}="Externo";K{row_number}*10%;IF(P{row_number}="Interno";K{row_number}*15%;0))'

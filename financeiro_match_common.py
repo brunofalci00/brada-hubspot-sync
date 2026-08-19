@@ -56,7 +56,14 @@ def interno_externo(row):
 
 
 def deal_link(row):
-    return f"https://app.hubspot.com/contacts/{PORTAL_ID}/deal/{str(row.get('deal_id', '')).strip()}"
+    """URL do negocio no formato ATUAL do HubSpot.
+
+    Era `/contacts/{portal}/deal/{id}`, formato legado. O resto do projeto usa
+    `/record/0-3/{id}`: a tabela do Ricardo ha semanas, e os 70 links gravados na
+    planilha de Comissoes em 19/08. Dois formatos na mesma planilha e convite para
+    alguem achar que um deles esta quebrado.
+    """
+    return f"https://app.hubspot.com/contacts/{PORTAL_ID}/record/0-3/{str(row.get('deal_id', '')).strip()}"
 
 
 def is_match_won(row):
@@ -348,6 +355,78 @@ def mesma_entidade(a, b):
         return False
     menor, maior = (tx, ty) if len(tx) <= len(ty) else (ty, tx)
     return menor <= maior
+
+
+# ---------------------------------------------------------------------------
+# Matching de linha de planilha -> negocio do HubSpot
+#
+# `mesma_entidade` acima NAO serve aqui, e nao da para adapta-la. Ela e um
+# predicado CONSERVADOR: "parece o mesmo, entao nao mexe". Um falso positivo la
+# significa preservar o que o humano escreveu, que e inofensivo. Aqui um falso
+# positivo significa gravar o link do negocio de OUTRO cliente numa planilha de
+# folha de pagamento.
+#
+# E nao adianta endurecer a funcao: ela devolve True para
+# ("Total", "Futebol Total Feminino") pelo ramo de substring, que e exatamente o
+# ramo de que o caso legitimo depende ("Encaminhando" dentro de "Associacao
+# Encaminhando"). Os dois sao nome de um token contido num nome maior. Nenhuma
+# regra de string separa os dois, porque a diferenca e semantica: uma palavra e
+# generica e a outra e distintiva.
+#
+# A saida nao esta no nome, esta na CORROBORACAO: nome sozinho nunca decide.
+# Quem chama tem que exigir um segundo campo batendo (data ou numero+valor).
+# ---------------------------------------------------------------------------
+
+LINHAS_NAO_DADO = {"total", "totais", "subtotal", "soma"}
+
+
+def linha_e_dado(nome):
+    """False para linha de Total, de subtotal e para linha vazia.
+
+    Existe porque essas linhas entram no matcher e casam por acidente: "Total" e
+    subconjunto de "Futebol Total Feminino". Descartar antes de comparar sai mais
+    barato que tentar desfazer um link errado depois.
+    """
+    return bool(norm(nome)) and norm(nome) not in LINHAS_NAO_DADO
+
+
+def forca_do_nome(a, b):
+    """Quao forte e a semelhanca entre dois nomes: "exato", "forte", "fraco" ou "".
+
+    Devolve a forca em vez de um booleano de proposito. Endurecer para um sim/nao
+    obrigaria a escolher entre dois erros:
+
+      - aceitar nome de UM token perde a distincao entre "Pianopolis" (proponente
+        real, uma palavra) e "Total" (linha de somatorio);
+      - recusar nome de um token quebra "GameJamPlus" contra
+        "GameJamPlus - Novo(a) Deal", que e casamento legitimo.
+
+    Com a forca na mao, quem classifica decide: "fraco" nunca vira ALTA, vai para
+    revisao humana. A ambiguidade fica visivel em vez de virar aposta.
+
+    Isto NAO autoriza casamento sozinho: quem chama sempre corrobora com data ou
+    com numero + valor.
+    """
+    x, y = norm(a), norm(b)
+    if not x or not y:
+        return ""
+    if x == y:
+        return "exato"
+    tx = {t for t in x.split() if len(t) > 2 and t not in _RUIDO_RAZAO_SOCIAL}
+    ty = {t for t in y.split() if len(t) > 2 and t not in _RUIDO_RAZAO_SOCIAL}
+    if not tx or not ty:
+        return ""
+    menor, maior = (tx, ty) if len(tx) <= len(ty) else (ty, tx)
+    if not menor <= maior:
+        return ""
+    # um token so casando dentro de um nome maior e o padrao de falso positivo
+    # ("Total" dentro de "Futebol Total Feminino"): vale como pista, nao como prova.
+    return "forte" if len(menor) >= 2 else "fraco"
+
+
+def nome_compativel(a, b):
+    """Atalho booleano de `forca_do_nome`, para quem so quer filtrar candidatos."""
+    return bool(forca_do_nome(a, b))
 
 
 def numeric_render_repairs(old, new, text_indices):

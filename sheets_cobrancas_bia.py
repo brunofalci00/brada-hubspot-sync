@@ -13,7 +13,7 @@ from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import MIN_ROWS_GUARD, current_cycle, fmt_date_br, load_consolidado, map_lei, parse_closedate
 from financeiro_match_common import (
     assert_fresh_source, blocking_gaps, changed_cells, completeness_gaps, deal_link, document_label,
-    divergent_cells, numeric_render_repairs, segmento_da_lei,
+    deal_link, divergent_cells, numeric_render_repairs, segmento_da_lei,
     digits, integer_at_least_one, interno_externo, money, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
@@ -43,11 +43,17 @@ TECH_HEADER = "hubspot_deal_id"
 #   T  Data do ultimo contato / U resposta   operacao dela
 # Nenhuma dessas e inferida: coluna sem fonte fica vazia e vira pendencia
 # nominal, em vez de receber um palpite (ex.: derivar segmento da lei).
+# Link do negocio no HubSpot, ultima coluna. O financeiro abre daqui para ver
+# recibo e anexo, que nao cabem na planilha. Sem isto a planilha e um beco sem
+# saida: da o numero, nao da o caminho de volta para a origem.
+HEADER_LINK = "Link HubSpot"
+LINK_IDX = 21   # V, primeira livre depois do bloco visivel A:U
+
 AUTO = {
     "cliente": 0, "cnpj": 1, "segmento": 2, "fonte": 3, "contrato": 4, "documento": 5,
     "condicoes": 6, "proponente": 7, "interno": 8, "projeto": 9, "numero": 10,
     "valor": 11, "parcelas": 13, "data": 14, "contato": 16, "telefone": 17,
-    "email": 18, "tech": TECH_IDX,
+    "email": 18, "link": LINK_IDX, "tech": TECH_IDX,
 }
 # C (Segmento Cultural) saiu daqui em 19/08: passou a ser derivado da lei de
 # incentivo (segmento_da_lei). Continua sem campo equivalente no HubSpot.
@@ -108,6 +114,7 @@ def build_row(deal):
     out[AUTO["contato"]] = deal.get("nome_contato_proponente", "")
     out[AUTO["telefone"]] = deal.get("telefone_proponente", "")
     out[AUTO["email"]] = deal.get("email_proponente", "")
+    out[AUTO["link"]] = deal_link(deal)
     out[TECH_IDX] = str(deal.get("deal_id", ""))
     return out
 

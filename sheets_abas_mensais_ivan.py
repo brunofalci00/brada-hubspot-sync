@@ -35,6 +35,7 @@ from sheets_reporting_financeiro_mensal import (
     load_consolidado, split_vendas, current_cycle, cycle_window, MIN_ROWS_GUARD,
 )
 from sheets_comissoes_ivan import select_cycle, _norm, _digits, utf8_stdout
+from financeiro_match_common import deal_link
 from financeiro_match_common import assert_fresh_source
 
 OFICIAL_ID_DEFAULT = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"
@@ -96,7 +97,9 @@ def ensure_month_tab(sh, template_name, new_name, extra_headers, n_template_cols
         c0 = rowcol_to_a1(1, n_template_cols + 1)
         c1 = rowcol_to_a1(1, n_template_cols + len(extra_headers))
         ws.update(values=[extra_headers], range_name=f"{c0}:{c1}", value_input_option="USER_ENTERED")
-        hide_columns(sh, ws, n_template_cols, len(extra_headers))
+        # so a primeira extra e tecnica. Ocultar todas esconderia o link, que existe
+        # justamente para ser clicado.
+        hide_columns(sh, ws, n_template_cols, 1)
     return ws, True
 
 
@@ -151,7 +154,12 @@ def criar_aba_vazia(sh, template, tab, extras, n_cols, frente):
 
 MATCH_TEMPLATE = "Junho_MATCH"
 N_MATCH_TEMPLATE = 16                 # A-P: A-H auto + I-K contato + L-P comissoes (todas no template)
-MATCH_EXTRA = ["deal_id"]             # unica coluna tecnica appendada e OCULTA (Q)
+# Link do negocio no HubSpot, ultima coluna. O financeiro abre daqui para ver
+# recibo e anexo, que nao cabem na planilha. Sem isto a planilha e um beco sem
+# saida: da o numero, nao da o caminho de volta para a origem.
+HEADER_LINK = "Link HubSpot"
+MATCH_EXTRA = ["deal_id", HEADER_LINK]   # Q tecnica OCULTA, R link VISIVEL
+MATCH_LINK_IDX = 17                      # R
 MATCH_TECH_IDX = 16                   # Q (deal_id)
 # indices 0-based das colunas AUTO no MATCH (contato agora VISIVEL em I/J/K, pedido Ivan 10/07)
 MCOL = {"cliente": 0, "fonte": 1, "proponente": 2, "interno": 3, "projeto": 4,
@@ -162,7 +170,7 @@ MCOL = {"cliente": 0, "fonte": 1, "proponente": 2, "interno": 3, "projeto": 4,
 def build_match_row(r):
     """Linha A-Q do {Mes}_MATCH. A-H auto; I-K contato (visivel); L-P (comissoes)
     em branco; Q deal_id (oculto)."""
-    out = [""] * (MATCH_TECH_IDX + 1)  # A..Q
+    out = [""] * (MATCH_LINK_IDX + 1)  # A..R
     out[MCOL["cliente"]] = r["cliente"]
     out[MCOL["fonte"]] = map_lei(r["lei_principal"])
     out[MCOL["proponente"]] = r["proponente"]
@@ -177,6 +185,7 @@ def build_match_row(r):
     out[MCOL["contato_tel"]] = r.get("telefone_proponente", "")
     out[MCOL["contato_email"]] = r.get("email_proponente", "")
     out[MATCH_TECH_IDX] = str(r["deal_id"]).strip()
+    out[MATCH_LINK_IDX] = deal_link(r)
     return out
 
 
@@ -220,7 +229,7 @@ def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False, aba_vazia=False
     rows_out = [build_match_row(r) for r in novos]
     start = last_row + 1
     end = start + len(rows_out) - 1
-    rng = f"A{start}:{rowcol_to_a1(1, MATCH_TECH_IDX + 1).rstrip('1')}{end}"
+    rng = f"A{start}:{rowcol_to_a1(1, MATCH_LINK_IDX + 1).rstrip('1')}{end}"
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
           f"({'aba criada' if criada else 'append'}). Comissoes L-P em branco; contato I-K visivel; deal_id oculto.")
@@ -342,7 +351,8 @@ def _proponente(p):
 # ---- Frente C: {Mes}_Elaboracao de Projetos ----
 ELAB_TEMPLATE = "Junho_Elaboração de Projetos"
 N_ELAB_TEMPLATE = 12           # A-L
-ELAB_EXTRA = ["deal_id"]
+ELAB_EXTRA = ["deal_id", HEADER_LINK]    # M tecnica OCULTA, N link VISIVEL
+ELAB_LINK_IDX = 13                       # N
 ELAB_TECH_IDX = 12             # M
 
 
@@ -360,7 +370,7 @@ def build_elaboracao_row(d):
     ficam VAZIAS — nao ha pagamento ate a captacao acontecer (Bruno 14/07, refina a
     convencao de 02/07 que copiava sempre)."""
     p = d["properties"]
-    out = [""] * (ELAB_TECH_IDX + 1)  # A-M
+    out = [""] * (ELAB_LINK_IDX + 1)  # A-N
     out[0] = _proponente(p)
     cd = parse_closedate(p.get("closedate"))
     out[1] = fmt_date_br(cd) if cd else ""
@@ -375,6 +385,7 @@ def build_elaboracao_row(d):
         out[7] = out[4]   # H Valor pago = E Valor
     # captado: G/H vazios (pagamento so na captacao)
     out[ELAB_TECH_IDX] = d["id"]
+    out[ELAB_LINK_IDX] = deal_link({"deal_id": d["id"]})
     return out
 
 
@@ -427,7 +438,7 @@ def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False, aba_vazi
     rows_out = [build_elaboracao_row(d) for d in novos]
     start_row = last_row + 1
     end_row = start_row + len(rows_out) - 1
-    rng = f"A{start_row}:{rowcol_to_a1(1, ELAB_TECH_IDX + 1).rstrip('1')}{end_row}"
+    rng = f"A{start_row}:{rowcol_to_a1(1, ELAB_LINK_IDX + 1).rstrip('1')}{end_row}"
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
           f"({'aba criada' if criada else 'append'}). I-L manuais em branco; deal_id oculto.")

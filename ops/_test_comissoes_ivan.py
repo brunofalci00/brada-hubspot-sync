@@ -165,6 +165,44 @@ def test_bia_layout_and_manuals():
         assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
 
 
+def test_forca_do_nome_separa_pista_de_prova():
+    """Casos reais medidos em 19/08 ao montar o matcher de link do HubSpot."""
+    # o falso positivo classico: nome de UM token dentro de um nome maior
+    assert common.forca_do_nome("Total", "Futebol Total Feminino") == "fraco"
+    assert common.forca_do_nome("Brasil", "Movimento de IA Brasil") == "fraco"
+    # legitimo, e tambem de um token so: por isso "fraco" e nao "nenhum"
+    assert common.forca_do_nome("GameJamPlus", "GameJamPlus - Novo(a) Deal") == "fraco"
+    # dois ou mais tokens de conteudo: da para confiar
+    assert common.forca_do_nome("Carioca Matsuri", "Carioca Matsuri ICMS") == "forte"
+    assert common.forca_do_nome("Missao Intensidade", "Escola de Dança Missao Intensidade") == "forte"
+    assert common.forca_do_nome("Acelera Indie Plus LTDA", "ACELERA INDIE PLUS TREINAMENTOS LTDA") == "forte"
+    assert common.forca_do_nome("Pianópolis", "Pianópolis") == "exato"
+    # entidades diferentes nao casam de jeito nenhum
+    assert common.forca_do_nome("JMK Sports", "ZENEG") == ""
+    assert common.forca_do_nome("", "ZENEG") == ""
+    # e a versao booleana concorda
+    assert common.nome_compativel("Carioca Matsuri", "Carioca Matsuri ICMS")
+    assert not common.nome_compativel("JMK Sports", "ZENEG")
+
+
+def test_deal_link_usa_o_formato_atual():
+    """Um so formato de URL no projeto. O legado `/deal/{id}` convivia com o
+    `/record/0-3/{id}` da tabela do Ricardo, e planilha com dois formatos faz
+    alguem achar que um deles quebrou."""
+    url = common.deal_link({"deal_id": "123"})
+    assert url == f"https://app.hubspot.com/contacts/{common.PORTAL_ID}/record/0-3/123"
+    assert "/deal/" not in url
+
+
+def test_linha_e_dado_descarta_somatorio():
+    """A linha de Total das abas de Elaboracao casava com um negocio no
+    prototipo. Descartar antes de comparar sai mais barato que desfazer."""
+    for lixo in ["Total", "TOTAL", "  total  ", "Subtotal", "Totais", "", None]:
+        assert not common.linha_e_dado(lixo), f"deveria descartar: {lixo!r}"
+    for real in ["Craques do Amanhã", "Pianópolis", "ZENEG"]:
+        assert common.linha_e_dado(real)
+
+
 def test_segmento_cobre_as_12_leis_do_enum():
     """O enum de `lei_principal` tem 12 valores, nao 2. Um mapa binario
     Cultura/Esporte rotularia 6 deles errado."""

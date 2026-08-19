@@ -23,7 +23,7 @@ def test_build_match_row():
          "nome_contato_proponente": "Contato", "telefone_proponente": "119",
          "email_proponente": "a@b.com", "deal_id": "D1"}
     row = m.build_match_row(r)
-    assert len(row) == 17, "A-Q = 17 colunas"
+    assert len(row) == 18, "A-Q = 17 colunas"
     assert row[0] == "Cli"          # A
     assert row[1] == "IR Cultura"   # B map_lei(Rouanet)
     assert row[2] == "Prop"         # C
@@ -69,7 +69,8 @@ def test_build_elaboracao_row():
         "produto": "Prestação de Contas", "condicao_de_pagamento": "Pix pela plataforma",
         "valor_do_aporte": "2000", "lei_principal": "Rouanet"}}
     row = m.build_elaboracao_row(d)
-    assert len(row) == 13, "A-M = 13 colunas"
+    assert len(row) == 14, "A-N = 14 colunas, a ultima e o Link HubSpot"
+    assert row[13] == f"https://app.hubspot.com/contacts/{m.PORTAL_ID}/record/0-3/E1"
     assert row[0] == "PropE"
     assert row[1] == "03/05/2026"
     assert row[2] == "Prestação de Contas"   # C produto cru (mostra Prestacao!)
