@@ -155,6 +155,7 @@ def test_bia_layout_and_manuals():
     row = bia.build_row(deal())
     assert len(row) == 29
     assert row[0] == "Empresa" and row[1] == "1"          # A Razao Social, B CNPJ
+    assert row[2] == "Cultura"                            # C derivado da lei Rouanet
     assert row[4] == "CT-1" and row[5] == "Nota Fiscal"   # E Contrato, F RECIBO/NOTA
     assert row[6] == "30/60" and row[8] == "Externo"      # G CONDICOES, I Interno/Externo
     assert row[11] == 1500.5 and row[13] == 2            # L Valor, N PARCELAS
@@ -162,6 +163,29 @@ def test_bia_layout_and_manuals():
     assert row[28] == "D1"                                # AC deal_id
     for idx in bia.MANUAIS_DA_BIA:
         assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
+
+
+def test_segmento_cobre_as_12_leis_do_enum():
+    """O enum de `lei_principal` tem 12 valores, nao 2. Um mapa binario
+    Cultura/Esporte rotularia 6 deles errado."""
+    enum = ["Rouanet", "Esporte Federal", "Esporte Estadual", "Lei do Bem", "FIA",
+            "Idoso", "Cultura Estadual", "Cultura Municipal", "Reciclagem",
+            "PRONAS", "PRONON", "Audiovisual"]
+    for lei in enum:
+        assert common.segmento_da_lei(lei), f"lei sem segmento no mapa: {lei}"
+    assert common.segmento_da_lei("Rouanet") == "Cultura"
+    assert common.segmento_da_lei("Audiovisual") == "Cultura"
+    assert common.segmento_da_lei("Esporte Estadual") == "Esporte"
+    assert common.segmento_da_lei("PRONAS") == "Saúde"
+    assert common.segmento_da_lei("FIA") == "Social"
+    assert common.segmento_da_lei("Lei do Bem") == "Inovação"
+    assert common.segmento_da_lei("Reciclagem") == "Ambiental"
+    # acento e caixa nao importam
+    assert common.segmento_da_lei("ESPORTE FEDERAL") == "Esporte"
+    # lei desconhecida ou vazia deixa a celula vazia, nunca um palpite
+    assert common.segmento_da_lei("Lei Nova de 2027") == ""
+    assert common.segmento_da_lei("") == ""
+    assert common.segmento_da_lei(None) == ""
 
 
 def test_mesma_entidade_nao_corrige_nome_abreviado():

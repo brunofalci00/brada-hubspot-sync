@@ -13,7 +13,7 @@ from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import MIN_ROWS_GUARD, current_cycle, fmt_date_br, load_consolidado, map_lei, parse_closedate
 from financeiro_match_common import (
     assert_fresh_source, blocking_gaps, changed_cells, completeness_gaps, deal_link, document_label,
-    divergent_cells, numeric_render_repairs,
+    divergent_cells, numeric_render_repairs, segmento_da_lei,
     digits, integer_at_least_one, interno_externo, money, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
@@ -38,19 +38,20 @@ TECH_HEADER = "hubspot_deal_id"
 
 # Escopo definido pelo Bruno em 19/08: a automacao preenche A-L e N-S.
 # Fora disso, e da Bia:
-#   C  Segmento Cultural      nao existe property equivalente no HubSpot
 #   M  VALOR A COBRAR         ela calcula
 #   P  Data de cobranca       decisao dela, nao tem origem no CRM
 #   T  Data do ultimo contato / U resposta   operacao dela
 # Nenhuma dessas e inferida: coluna sem fonte fica vazia e vira pendencia
 # nominal, em vez de receber um palpite (ex.: derivar segmento da lei).
 AUTO = {
-    "cliente": 0, "cnpj": 1, "fonte": 3, "contrato": 4, "documento": 5,
+    "cliente": 0, "cnpj": 1, "segmento": 2, "fonte": 3, "contrato": 4, "documento": 5,
     "condicoes": 6, "proponente": 7, "interno": 8, "projeto": 9, "numero": 10,
     "valor": 11, "parcelas": 13, "data": 14, "contato": 16, "telefone": 17,
     "email": 18, "tech": TECH_IDX,
 }
-MANUAIS_DA_BIA = {2: "Segmento Cultural", 12: "VALOR A COBRAR", 15: "Data de cobrança",
+# C (Segmento Cultural) saiu daqui em 19/08: passou a ser derivado da lei de
+# incentivo (segmento_da_lei). Continua sem campo equivalente no HubSpot.
+MANUAIS_DA_BIA = {12: "VALOR A COBRAR", 15: "Data de cobrança",
                   19: "Data do ultimo contato", 20: "resposta"}
 # Identificadores, nao quantidades: se o Sheets guardar como numero, some o zero
 # a esquerda e o CNPJ deixa de servir para emitir nota. Formatadas como TEXTO
@@ -92,6 +93,7 @@ def build_row(deal):
     out = [""] * 29
     out[AUTO["cliente"]] = deal.get("cliente", "")
     out[AUTO["cnpj"]] = deal.get("cnpj", "")
+    out[AUTO["segmento"]] = segmento_da_lei(deal.get("lei_principal", ""))
     out[AUTO["fonte"]] = map_lei(deal.get("lei_principal", ""))
     out[AUTO["contrato"]] = deal.get("numero_contrato_financeiro", "")
     out[AUTO["documento"]] = document_label(deal.get("documento_cobranca", ""))
@@ -136,7 +138,12 @@ def main():
     ap.add_argument("--sheet-id", default=OFICIAL_ID_DEFAULT)
     ap.add_argument("--ws", default=WS_DEFAULT)
     ap.add_argument("--cycle", default=None)
-    ap.add_argument("--all-pending", action="store_true")
+    ap.add_argument("--all-pending", action="store_true",
+                    help="ignora o ciclo e considera TODO negocio pendente. Exige "
+                         "--confirmo-carga-completa junto.")
+    ap.add_argument("--confirmo-carga-completa", action="store_true",
+                    help="libera o --all-pending. Existe porque a flag ja acrescentou 13 "
+                         "linhas indesejadas numa aba de operacao em 19/08.")
     ap.add_argument("--desde-ano", type=int, default=2026,
                     help="ano minimo do aporte na carga (default 2026). Dos 57 MATCH ganhos, "
                          "40 sao de 2024/2025 e quase certamente ja liquidados: joga-los numa "
@@ -162,7 +169,9 @@ def main():
     fora_do_ano = antes - len(all_deals)
     # As 4 properties financeiras nao vem no consolidado de producao. Le direto
     # do HubSpot; ver hubspot_financeiro para o porque de nao deployar o sync.py.
+    sem_cnpj_antes = sum(1 for d in all_deals if not str(d.get("cnpj") or "").strip())
     com_financeiras = enriquecer_financeiras(all_deals)
+    sem_cnpj_depois = sum(1 for d in all_deals if not str(d.get("cnpj") or "").strip())
     cycle_deals = select_cycle(all_deals, cycle, all_pending=args.all_pending)
     sh = gc.open_by_key(args.sheet_id)
     ws = sh.worksheet(args.ws)
@@ -170,6 +179,18 @@ def main():
     matches, ambiguous, unmatched = reconcile(state["records"], all_deals, SCHEMA)
     cycle_ids = {str(d["deal_id"]) for d in cycle_deals}
     to_append = [d for d in unmatched if str(d["deal_id"]) in cycle_ids]
+
+    # A carga completa e o modo de falha mais caro deste script: em 19/08 ela
+    # acrescentou 13 negocios antigos numa aba de cobranca ATIVA, e alguem teve
+    # que apagar linha por linha. O ciclo e o padrao; sair dele e decisao, e
+    # decisao explicita.
+    if args.all_pending and not args.confirmo_carga_completa:
+        fora = [d for d in all_deals if str(d["deal_id"]) not in {r["deal_id"] for r in state["records"]}]
+        raise SystemExit(
+            f"[abort] --all-pending sem --confirmo-carga-completa.\n"
+            f"  Isso acrescentaria ate {len(fora)} linha(s) fora do ciclo {cycle} nesta aba.\n"
+            f"  Sem a flag, o script atualiza as linhas que ja existem e nao acrescenta nenhuma."
+        )
 
     changes, bloqueados, a_preencher, divergencias, reparos = [], [], [], [], []
     for match in matches:
@@ -215,6 +236,8 @@ def main():
     print(f"Controle de Cobranças - Bia | ciclo={cycle} | fonte={source_ts}")
     print(f"MATCH ganho de {args.desde_ano} em diante: {len(all_deals)} "
           f"(anteriores ignorados: {fora_do_ano}) | com alguma property financeira: {com_financeiras}")
+    print(f"CNPJ: {sem_cnpj_antes - sem_cnpj_depois} resolvido(s) pela empresa vinculada no HubSpot "
+          f"| {sem_cnpj_depois} ainda sem (card sem empresa ou empresa sem CNPJ)")
     print(f"existentes={len(state['records'])} matches={len(matches)} ambiguos={len(ambiguous)} "
           f"updates={len(changes)} append={len(append_ok)} bloqueados={len(bloqueados)} "
           f"com_lacuna_preenchivel={len(a_preencher)} divergencias_preservadas={len(divergencias)} "

@@ -286,6 +286,40 @@ _RUIDO_RAZAO_SOCIAL = {
 }
 
 
+# A aba da Bia tem uma coluna "Segmento Cultural" que NAO existe como campo no
+# HubSpot. O que existe e `linha_de_imposto_categoria` (IR / ICMS / ISS), que e
+# linha de imposto e ja aparece em "Fonte de recurso" — nao serve.
+#
+# Decisao do Bruno (19/08): derivar da lei de incentivo. Atencao ao tamanho do
+# enum: `lei_principal` aceita 12 valores, e 6 deles nao sao nem cultura nem
+# esporte. Um mapa binario rotularia PRONAS, PRONON, FIA, Idoso, Lei do Bem e
+# Reciclagem errado, sem ninguem perceber.
+SEGMENTO_POR_LEI = {
+    "rouanet": "Cultura",
+    "cultura estadual": "Cultura",
+    "cultura municipal": "Cultura",
+    "audiovisual": "Cultura",
+    "esporte federal": "Esporte",
+    "esporte estadual": "Esporte",
+    "fia": "Social",
+    "idoso": "Social",
+    "pronas": "Saúde",
+    "pronon": "Saúde",
+    "lei do bem": "Inovação",
+    "reciclagem": "Ambiental",
+}
+
+
+def segmento_da_lei(lei):
+    """Segmento a partir da lei de incentivo. Lei desconhecida devolve vazio.
+
+    Vazio de proposito: numa aba de cobranca, celula em branco e uma pergunta, e
+    um rotulo errado e uma resposta falsa. Se aparecer lei nova no HubSpot, a
+    coluna fica vazia e o teste do enum acusa, em vez de sair um palpite.
+    """
+    return SEGMENTO_POR_LEI.get(norm(lei), "")
+
+
 def mesma_entidade(a, b):
     """Os dois textos nomeiam a MESMA empresa, so escrita de jeito diferente?
 
