@@ -44,7 +44,7 @@ jobs:
         run: |
           python ops/_test_comissoes_ivan.py
           python ops/_test_abas_mensais_ivan.py
-          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py ops/criar_props_financeiro_cobrancas.py
+          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py \n            hubspot_financeiro.py ops/criar_props_financeiro_cobrancas.py \n            ops/recuperar_elaboracao_atrasada.py
 
       - name: Definir ARGS (write/cycle)
         id: args
@@ -62,6 +62,9 @@ jobs:
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # as 4 properties financeiras nao vem no consolidado: hubspot_financeiro
+          # le direto da API. Sem o token, estas frentes abortam.
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
         run: |
           echo "sheets_comissoes_ivan.py ${{ steps.args.outputs.args }}"
           python sheets_comissoes_ivan.py ${{ steps.args.outputs.args }}
@@ -70,6 +73,9 @@ jobs:
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # as 4 properties financeiras nao vem no consolidado: hubspot_financeiro
+          # le direto da API. Sem o token, estas frentes abortam.
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
         run: |
           echo "sheets_cobrancas_bia.py ${{ steps.args.outputs.args }}"
           python sheets_cobrancas_bia.py ${{ steps.args.outputs.args }}
