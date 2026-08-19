@@ -2,7 +2,8 @@
 """Nucleo compartilhado das automacoes financeiras MATCH.
 
 Funcoes puras: selecao, ciclo 21-20, normalizacao, completude e reconciliacao.
-Nenhuma funcao deste modulo escreve em HubSpot ou Google Sheets.
+Nenhuma funcao deste modulo le nem escreve em HubSpot ou Google Sheets — e o que
+mantem a suite de testes offline. Leitura de HubSpot vive em hubspot_financeiro.
 """
 from __future__ import annotations
 
@@ -84,7 +85,31 @@ def select_cycle(rows, cycle, all_pending=False):
     return selected
 
 
+# Nem toda lacuna pesa igual. As de IDENTIDADE e VALOR sao bloqueantes: sem
+# cliente, projeto, valor ou data a linha nao identifica cobranca nenhuma e
+# escreve-la seria pior que nao escrever. As demais (contato e os 4 campos
+# financeiros criados em 06/08) sao lacunas de PREENCHIMENTO: o negocio existe,
+# alguem ainda nao digitou. Como a escrita e upsert por deal_id, a celula se
+# preenche sozinha no run seguinte, sem retrabalho.
+#
+# A distincao existe porque as 4 properties financeiras estao hoje com ZERO
+# preenchimento. Tratar tudo como bloqueante deixaria a aba da Bia vazia por
+# tempo indeterminado, que foi exatamente o que travou o rollout de 06/08.
+CAMPOS_BLOQUEANTES = (
+    "cliente/empresa associada", "lei_principal", "numero_do_projeto",
+    "nome_do_projeto", "nome_do_proponente", "empresa_associada/cnpj",
+    "closedate", "valor",
+)
+
+
+def blocking_gaps(row):
+    """So as lacunas que impedem a linha de existir. Ver CAMPOS_BLOQUEANTES."""
+    return [g for g in completeness_gaps(row) if g in CAMPOS_BLOQUEANTES]
+
+
 def completeness_gaps(row):
+    """TODAS as lacunas, bloqueantes e de preenchimento. Use blocking_gaps para
+    decidir escrita; use esta para o relatorio de completude e as pendencias."""
     gaps = []
     required_text = {
         "cliente/empresa associada": row.get("cliente"),

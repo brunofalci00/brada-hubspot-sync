@@ -32,10 +32,41 @@ def record(row, values, deal_id=""):
     return {"row_number": row, "cells": values, "deal_id": deal_id}
 
 
-def test_schema_append_only():
-    assert reporting.CONSOLIDADO_HEADER[-4:] == list(common.FINANCE_FIELDS)
-    for field in common.FINANCE_FIELDS:
-        assert field in sync.DEAL_PROPERTIES
+def test_contrato_consolidado_aceita_os_dois_formatos():
+    """Producao tem 37 colunas; com o deploy do sync.py novo passa a ter 41.
+    Os dois valem. Qualquer outra coisa tem que abortar."""
+    obrig = reporting.CONSOLIDADO_HEADER
+    fin = reporting.CONSOLIDADO_HEADER_FINANCEIRO
+    assert fin == list(common.FINANCE_FIELDS)
+    assert not set(obrig) & set(fin), "financeiras nao podem estar no bloco obrigatorio"
+    assert reporting.validar_header_consolidado(list(obrig)) == []
+    assert reporting.validar_header_consolidado(list(obrig) + fin) == fin
+    for ruim, porque in [
+        (list(obrig)[:-1], "faltando a ultima obrigatoria"),
+        (list(obrig) + fin[:2], "cauda financeira pela metade"),
+        (list(obrig) + ["coluna_nova"], "coluna desconhecida no fim"),
+        (list(reversed(obrig)), "ordem trocada"),
+    ]:
+        try:
+            reporting.validar_header_consolidado(ruim)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("deveria abortar: " + porque)
+
+
+def test_lacuna_bloqueante_x_preenchivel():
+    """As 4 properties financeiras estao com zero preenchimento no HubSpot. Se
+    elas travassem a escrita, a aba da Bia ficaria vazia por tempo indeterminado
+    — foi o que segurou o rollout de 06/08. Identidade e valor seguem travando."""
+    sem_financeiras = deal(numero_contrato_financeiro="", documento_cobranca="",
+                           condicoes_pagamento_financeiro="", numero_parcelas_financeiro="")
+    assert common.blocking_gaps(sem_financeiras) == []
+    assert common.completeness_gaps(sem_financeiras), "as lacunas ainda tem que ser reportadas"
+    assert common.blocking_gaps(deal(cnpj="")) == ["empresa_associada/cnpj"]
+    assert "valor" in common.blocking_gaps(deal(valor_bruto="0"))
+    assert "closedate" in common.blocking_gaps(deal(closedate=""))
+    assert common.blocking_gaps(deal()) == []
 
 
 def test_scope_and_cycle():
@@ -88,11 +119,20 @@ def test_vendas_layout_formula_and_manuals():
 
 
 def test_bia_layout_and_manuals():
+    """Layout real de 21 colunas conferido na aba viva em 19/08: o time inseriu
+    CNPJ e Segmento Cultural no inicio, deslocando tudo duas casas."""
+    assert bia.HEADER[:3] == ["Razão Social", "CNPJ", "Segmento Cultural"]
+    assert len(bia.HEADER) == 21
     row = bia.build_row(deal())
-    assert len(row) == 29 and row[2] == "CT-1" and row[3] == "Nota Fiscal"
-    assert row[4] == "30/60" and row[11] == 2 and row[28] == "D1"
-    for idx in [10, 13, 17, 18]:
-        assert row[idx] == "", f"manual idx {idx} alterado"
+    assert len(row) == 29
+    assert row[0] == "Empresa" and row[1] == "1"          # A Razao Social, B CNPJ
+    assert row[4] == "CT-1" and row[5] == "Nota Fiscal"   # E Contrato, F RECIBO/NOTA
+    assert row[6] == "30/60" and row[8] == "Externo"      # G CONDICOES, I Interno/Externo
+    assert row[11] == 1500.5 and row[13] == 2            # L Valor, N PARCELAS
+    assert row[16] == "Contato" and row[18] == "c@x.com"  # Q contato, S e-mail
+    assert row[28] == "D1"                                # AC deal_id
+    for idx in bia.MANUAIS_DA_BIA:
+        assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
 
 
 def test_freshness():

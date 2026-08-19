@@ -64,6 +64,16 @@ CONSOLIDADO_HEADER = [
     "valor_projetado_ativo",
 ]
 
+# As 4 colunas financeiras de 06/08 sao OPCIONAIS. Elas existem na versao do
+# sync.py que nunca foi deployada: em producao o consolidado tem 37 colunas e,
+# se o deploy acontecer, passa a ter 41. Os dois formatos sao aceitos, nesta
+# ordem e so no fim. Enquanto nao existirem aqui, quem precisa delas le direto
+# do HubSpot (financeiro_match_common.carregar_props_financeiras).
+CONSOLIDADO_HEADER_FINANCEIRO = [
+    "numero_contrato_financeiro", "documento_cobranca",
+    "condicoes_pagamento_financeiro", "numero_parcelas_financeiro",
+]
+
 # Layout exato da aba "Controle de Vendas" do Ivan (A-R) + colunas tecnicas.
 TARGET_HEADER = [
     "Cliente", "Fonte de recurso", "Proponente", "Dados para Cobrança",
@@ -171,6 +181,31 @@ def fmt_brl(v):
 # LEITURA
 # ===================================================
 
+def validar_header_consolidado(header):
+    """Confere o header do consolidado e devolve a cauda financeira lida.
+
+    Pura de proposito: e o guard que impede um shift de coluna virar numero
+    errado em folha de pagamento, entao precisa ser testavel sem rede.
+    O prefixo obrigatorio e comparado por nome E ordem. A cauda so aceita dois
+    formatos: vazia (producao hoje, 37 colunas) ou exatamente as 4 financeiras
+    (se o sync.py novo for deployado, 41 colunas). Qualquer outra coisa aborta.
+    """
+    n_obrig = len(CONSOLIDADO_HEADER)
+    cauda = header[n_obrig:]
+    if header[:n_obrig] == CONSOLIDADO_HEADER and cauda in ([], CONSOLIDADO_HEADER_FINANCEIRO):
+        return cauda
+    conhecidas = CONSOLIDADO_HEADER + CONSOLIDADO_HEADER_FINANCEIRO
+    faltando = [c for c in CONSOLIDADO_HEADER if c not in header]
+    extras = [c for c in header if c not in conhecidas]
+    raise SystemExit(
+        "Header do consolidado divergiu do contrato (sync.py mudou?).\n"
+        f"  faltando: {faltando}\n  extras: {extras}\n"
+        f"  cauda lida: {cauda}\n"
+        f"  ordem atual: {header}\n"
+        "Atualize CONSOLIDADO_HEADER conscientemente — leitura e posicional."
+    )
+
+
 def load_consolidado(gc):
     """Le a aba consolidado inteira; valida o contrato de header (hard-fail)."""
     sh = gc.open_by_key(SOURCE_SPREADSHEET_ID)
@@ -178,16 +213,14 @@ def load_consolidado(gc):
     if not vals:
         raise SystemExit("consolidado vazio — sync no meio do clear+write? Tente de novo em alguns minutos.")
     header = vals[0]
-    if header != CONSOLIDADO_HEADER:
-        faltando = [c for c in CONSOLIDADO_HEADER if c not in header]
-        extras = [c for c in header if c not in CONSOLIDADO_HEADER]
-        raise SystemExit(
-            "Header do consolidado divergiu do contrato (sync.py mudou?).\n"
-            f"  faltando: {faltando}\n  extras: {extras}\n"
-            f"  ordem atual: {header}\n"
-            "Atualize CONSOLIDADO_HEADER conscientemente — leitura e posicional."
-        )
+    cauda = validar_header_consolidado(header)
     rows = [dict(zip(header, r)) for r in vals[1:] if any(c.strip() for c in r)]
+    # Sem o deploy do sync.py essas 4 chaves nao existem no dict. Cria vazias
+    # para o resto do codigo poder usar r["..."] sem saber qual versao rodou.
+    if cauda != CONSOLIDADO_HEADER_FINANCEIRO:
+        for r in rows:
+            for c in CONSOLIDADO_HEADER_FINANCEIRO:
+                r.setdefault(c, "")
 
     # Proveniencia: o consolidado e escrito no mesmo run do sync de deals,
     # entao o timestamp proxy e a linha 'ultima_sync_deals' da _meta da fonte.

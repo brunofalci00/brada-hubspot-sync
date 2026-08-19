@@ -126,6 +126,25 @@ def read_existing(sh, tab, n_cols, tech_idx):
     return True, last_row, ids, is_auto
 
 
+def criar_aba_vazia(sh, template, tab, extras, n_cols, frente):
+    """Cria a aba do mes so com cabecalho, quando o ciclo fechou sem nenhum deal.
+
+    Por padrao a automacao nao cria aba vazia: no cron isso mascararia um ciclo
+    que nao rodou. Mas quando o fecho e conferido e o zero e real, a aba precisa
+    existir — a ausencia dela na planilha se le como esquecimento, nao como
+    "nao houve venda". Nasce ja no formato da automacao (com a coluna tecnica
+    deal_id oculta), entao se algum card virar Ganho depois o run seguinte
+    preenche sozinho.
+    """
+    ws, criada = ensure_month_tab(sh, template, tab, extras, n_cols)
+    if criada:
+        print(f"[write] {frente} {tab}: aba CRIADA vazia (ciclo sem movimento). "
+              "So cabecalho + deal_id oculto; o proximo run preenche se aparecer deal.")
+    else:
+        print(f"[write] {frente} {tab}: ja existia, nada a fazer.")
+    return ws, criada
+
+
 # ===================================================
 # FRENTE B — {Mes}_MATCH
 # ===================================================
@@ -161,7 +180,7 @@ def build_match_row(r):
     return out
 
 
-def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
+def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False, aba_vazia=False):
     mes = cycle_to_mes(cycle)
     tab = tab or f"{mes}_MATCH"
     cands = select_cycle(inc, cycle)
@@ -190,7 +209,10 @@ def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
         print(f"[write] {tab}: BLOQUEADO (aba manual/fechada, ex. Junho). Nada gravado.")
         return
     if not novos:
-        print(f"[write] {tab}: 0 novos — nada a gravar.")
+        if aba_vazia:
+            criar_aba_vazia(sh, MATCH_TEMPLATE, tab, MATCH_EXTRA, N_MATCH_TEMPLATE, "FRENTE B")
+        else:
+            print(f"[write] {tab}: 0 novos — nada a gravar.")
         return
     ws, criada = ensure_month_tab(sh, MATCH_TEMPLATE, tab, MATCH_EXTRA, N_MATCH_TEMPLATE)
     if criada:
@@ -320,7 +342,7 @@ def _deals_no_ciclo(deals, cycle):
     return out
 
 
-def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False):
+def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False, aba_vazia=False):
     mes = cycle_to_mes(cycle)
     tab = tab or f"{mes}_Elaboração de Projetos"
     cands = _deals_no_ciclo(deals, cycle)
@@ -348,7 +370,10 @@ def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False):
         print(f"[write] {tab}: BLOQUEADO (aba manual/fechada). Nada gravado.")
         return
     if not novos:
-        print(f"[write] {tab}: 0 novos — nada a gravar.")
+        if aba_vazia:
+            criar_aba_vazia(sh, ELAB_TEMPLATE, tab, ELAB_EXTRA, N_ELAB_TEMPLATE, "FRENTE C")
+        else:
+            print(f"[write] {tab}: 0 novos — nada a gravar.")
         return
     ws, criada = ensure_month_tab(sh, ELAB_TEMPLATE, tab, ELAB_EXTRA, N_ELAB_TEMPLATE)
     if criada:
@@ -497,6 +522,10 @@ def main():
     ap.add_argument("--tab", default=None, help="override do nome da aba (sandbox/teste)")
     ap.add_argument("--rebuild", action="store_true",
                     help="Frente D: limpa os dados da tabela e re-popula do zero (uniformiza)")
+    ap.add_argument("--aba-vazia", action="store_true",
+                    help="cria a aba do mes mesmo sem nenhum deal no ciclo (so cabecalho). "
+                         "Fora daqui o comportamento nao muda: no cron, aba vazia mascararia "
+                         "um ciclo que nao rodou.")
     ap.add_argument("--hidden", action="store_true",
                     help="oculta as abas do mes recem-criadas (validacao antes de publicar dia 20)")
     args = ap.parse_args()
@@ -521,14 +550,16 @@ def main():
         print(f"consolidado fonte_ts={fonte_ts} | Match Won total={len(inc)}\n")
         if args.write:
             assert_fresh_source(fonte_ts)
-        run_match_mes(sh, cycle, inc, args.write, tab=args.tab, hidden=args.hidden)
+        run_match_mes(sh, cycle, inc, args.write, tab=args.tab, hidden=args.hidden,
+                      aba_vazia=args.aba_vazia)
 
     if do_elab or do_ric:
         token = load_hubspot_token()
         deals = search_elaboracao_won(token)
         print(f"\nHubSpot: {len(deals)} deals Proponente ganho (produtos {PRODUTOS_ELABORACAO})\n")
         if do_elab:
-            run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab, hidden=args.hidden)
+            run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab, hidden=args.hidden,
+                               aba_vazia=args.aba_vazia)
         if do_ric:
             run_ricardo(gc, deals, args.write, rebuild=args.rebuild)
 
