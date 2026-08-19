@@ -13,6 +13,7 @@ from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import MIN_ROWS_GUARD, current_cycle, fmt_date_br, load_consolidado, map_lei, parse_closedate
 from financeiro_match_common import (
     assert_fresh_source, blocking_gaps, changed_cells, completeness_gaps, deal_link, document_label,
+    divergent_cells,
     digits, integer_at_least_one, interno_externo, money, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
@@ -155,7 +156,7 @@ def main():
     cycle_ids = {str(d["deal_id"]) for d in cycle_deals}
     to_append = [d for d in unmatched if str(d["deal_id"]) in cycle_ids]
 
-    changes, bloqueados, a_preencher = [], [], []
+    changes, bloqueados, a_preencher, divergencias = [], [], [], []
     for match in matches:
         deal, record = match["deal"], match["row"]
         travas = blocking_gaps(deal)
@@ -166,8 +167,17 @@ def main():
         if pendentes:
             a_preencher.append((deal, pendentes, record["row_number"]))
         new = build_row(deal)
-        for idx, old, value in changed_cells(record["cells"], new, AUTO_INDICES, {AUTO["valor"]: money, AUTO["parcelas"]: integer_at_least_one, AUTO["data"]: sheet_date, AUTO["telefone"]: digits, AUTO["numero"]: text_id, AUTO["tech"]: text_id}):
+        norm = {AUTO["valor"]: money, AUTO["parcelas"]: integer_at_least_one,
+                AUTO["data"]: sheet_date, AUTO["telefone"]: digits,
+                AUTO["numero"]: text_id, AUTO["tech"]: text_id}
+        # A Bia mantem esta aba a mao e o que ela digitou costuma ser MAIS
+        # especifico que o CRM. A automacao so preenche celula vazia; onde os
+        # dois lados divergem, reporta e nao toca.
+        for idx, old, value in changed_cells(record["cells"], new, AUTO_INDICES, norm,
+                                             only_fill_blanks=True):
             changes.append((record["row_number"], idx, old, value, deal))
+        for idx, old, value in divergent_cells(record["cells"], new, AUTO_INDICES, norm):
+            divergencias.append((record["row_number"], idx, old, value, deal))
     append_ok = []
     for deal in to_append:
         travas = blocking_gaps(deal)
@@ -184,7 +194,7 @@ def main():
           f"(anteriores ignorados: {fora_do_ano}) | com alguma property financeira: {com_financeiras}")
     print(f"existentes={len(state['records'])} matches={len(matches)} ambiguos={len(ambiguous)} "
           f"updates={len(changes)} append={len(append_ok)} bloqueados={len(bloqueados)} "
-          f"com_lacuna_preenchivel={len(a_preencher)}")
+          f"com_lacuna_preenchivel={len(a_preencher)} divergencias_preservadas={len(divergencias)}")
     print("preservadas (manuais da Bia): " + ", ".join(MANUAIS_DA_BIA.values()))
     for item in ambiguous:
         print(f"[AMBIGUO] linha {item['row']['row_number']}: {[d['deal_id'] for d in item['candidates']]}")
@@ -192,6 +202,9 @@ def main():
         print(f"[BLOQUEADO] linha={row or 'nova'} deal={deal['deal_id']} faltam={','.join(gaps)} {deal_link(deal)}")
     for deal, gaps, row in a_preencher:
         print(f"[LACUNA] linha={row or 'nova'} deal={deal['deal_id']} vazias={','.join(gaps)} {deal_link(deal)}")
+    for row, idx, old, value, deal in divergencias:
+        print(f"[DIVERGE] {rowcol_to_a1(row, idx+1)} ({HEADER[idx]}) planilha={old!r} "
+              f"hubspot={value!r} deal={deal['deal_id']} — nao sobrescrito")
     for row, idx, old, value, deal in changes[:100]:
         print(f"[DIFF] {rowcol_to_a1(row, idx+1)} {old!r} -> {value!r} deal={deal['deal_id']}")
 

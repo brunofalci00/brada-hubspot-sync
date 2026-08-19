@@ -10,7 +10,6 @@ import financeiro_match_common as common
 import sheets_comissoes_ivan as vendas
 import sheets_cobrancas_bia as bia
 import sheets_reporting_financeiro_mensal as reporting
-import sync
 
 
 def deal(deal_id="D1", **overrides):
@@ -63,10 +62,23 @@ def test_lacuna_bloqueante_x_preenchivel():
                            condicoes_pagamento_financeiro="", numero_parcelas_financeiro="")
     assert common.blocking_gaps(sem_financeiras) == []
     assert common.completeness_gaps(sem_financeiras), "as lacunas ainda tem que ser reportadas"
-    assert common.blocking_gaps(deal(cnpj="")) == ["empresa_associada/cnpj"]
+    # CNPJ, lei e contato NAO travam: faltam em muitos deals e nao participam da
+    # reconciliacao. Entram como lacuna reportada, e a celula se preenche no run
+    # seguinte quando alguem digitar no HubSpot.
+    assert common.blocking_gaps(deal(cnpj="")) == []
+    assert "empresa_associada/cnpj" in common.completeness_gaps(deal(cnpj=""))
+    assert common.blocking_gaps(deal(lei_principal="")) == []
+    # As chaves de reconciliacao travam: sem elas o run seguinte duplicaria a linha.
     assert "valor" in common.blocking_gaps(deal(valor_bruto="0"))
     assert "closedate" in common.blocking_gaps(deal(closedate=""))
+    assert "numero_do_projeto" in common.blocking_gaps(deal(numero_projeto=""))
+    assert "nome_do_projeto" in common.blocking_gaps(deal(nome_projeto=""))
+    assert "cliente/empresa associada" in common.blocking_gaps(deal(cliente=""))
     assert common.blocking_gaps(deal()) == []
+    # o conjunto bloqueante e exatamente o das chaves de reconciliacao
+    assert set(common.CAMPOS_BLOQUEANTES) == {
+        "cliente/empresa associada", "numero_do_projeto", "nome_do_projeto",
+        "closedate", "valor"}
 
 
 def test_scope_and_cycle():
@@ -107,6 +119,23 @@ def test_null_never_erases():
     old, new = ["mantem"], [""]
     assert common.changed_cells(old, new, [0]) == []
     assert common.changed_cells(old, ["novo"], [0]) == [(0, "mantem", "novo")]
+
+
+def test_only_fill_blanks_preserva_o_que_foi_digitado():
+    """Aba mantida a mao: automacao preenche vazio, nunca corrige o humano.
+    Caso real da aba da Bia em 19/08 — o nome que ela digitou era mais
+    especifico que o nome do projeto no HubSpot."""
+    planilha = ["Craques do Amanhã", "", "(21) 98836-8628"]
+    hubspot = ["FIM DE ANO FELIZ", "CT-9", "+5521988368628"]
+    idx = [0, 1, 2]
+    assert common.changed_cells(planilha, hubspot, idx, only_fill_blanks=True) == [(1, "", "CT-9")]
+    # sem a flag, sobrescreveria os tres
+    assert len(common.changed_cells(planilha, hubspot, idx)) == 3
+    # o que nao foi sobrescrito nao some: vira relatorio
+    div = common.divergent_cells(planilha, hubspot, idx)
+    assert [d[0] for d in div] == [0, 2]
+    # celula vazia de um dos lados nao e divergencia, e lacuna
+    assert common.divergent_cells(["", "x"], ["a", ""], [0, 1]) == []
 
 
 def test_vendas_layout_formula_and_manuals():

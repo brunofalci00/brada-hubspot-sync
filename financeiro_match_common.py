@@ -85,19 +85,24 @@ def select_cycle(rows, cycle, all_pending=False):
     return selected
 
 
-# Nem toda lacuna pesa igual. As de IDENTIDADE e VALOR sao bloqueantes: sem
-# cliente, projeto, valor ou data a linha nao identifica cobranca nenhuma e
-# escreve-la seria pior que nao escrever. As demais (contato e os 4 campos
-# financeiros criados em 06/08) sao lacunas de PREENCHIMENTO: o negocio existe,
-# alguem ainda nao digitou. Como a escrita e upsert por deal_id, a celula se
-# preenche sozinha no run seguinte, sem retrabalho.
+# Nem toda lacuna pesa igual, e o criterio nao e "quao importante e o campo":
+# e se a AUSENCIA dele quebra a reconciliacao. As linhas legadas nao tem
+# deal_id, entao o unico jeito de reencontra-las no run seguinte e por
+# cliente + projeto + numero + valor + data (ver SCHEMA de cada automacao).
+# Faltando uma dessas, o proximo run nao reconhece a linha e a DUPLICA. Por isso
+# essas travam a escrita: escrever seria pior que nao escrever.
 #
-# A distincao existe porque as 4 properties financeiras estao hoje com ZERO
-# preenchimento. Tratar tudo como bloqueante deixaria a aba da Bia vazia por
-# tempo indeterminado, que foi exatamente o que travou o rollout de 06/08.
+# Todo o resto e lacuna de PREENCHIMENTO: o negocio existe, alguem ainda nao
+# digitou. Como a escrita e upsert por deal_id, a celula se preenche sozinha no
+# run seguinte, sem retrabalho e sem duplicar nada. Entram aqui o CNPJ, a lei, o
+# contato do proponente e as 4 properties financeiras.
+#
+# A distincao importa porque as 4 financeiras estao hoje com ZERO preenchimento
+# e o CNPJ falta em 19 dos 57 MATCH ganhos. Tratar tudo como bloqueante deixaria
+# a aba da Bia vazia por tempo indeterminado — foi exatamente o que travou o
+# rollout de 06/08.
 CAMPOS_BLOQUEANTES = (
-    "cliente/empresa associada", "lei_principal", "numero_do_projeto",
-    "nome_do_projeto", "nome_do_proponente", "empresa_associada/cnpj",
+    "cliente/empresa associada", "numero_do_projeto", "nome_do_projeto",
     "closedate", "valor",
 )
 
@@ -266,7 +271,17 @@ def sheet_date(value):
     return parsed.isoformat() if parsed else raw
 
 
-def changed_cells(old, new, auto_indices, normalizers=None):
+def changed_cells(old, new, auto_indices, normalizers=None, only_fill_blanks=False):
+    """Celulas a mudar numa linha que ja existe.
+
+    only_fill_blanks=True: escreve APENAS onde a celula esta vazia. Serve para
+    aba que alguem mantem a mao. Medido em 19/08 na aba da Bia: sem isso, a
+    automacao trocaria "Craque do Amanha Santa Isabel SP" e "Craques do Amanha"
+    (duas linhas distintas, digitadas por ela) pelo mesmo "FIM DE ANO FELIZ - 5a
+    EDICAO" do HubSpot, e "ICMS Esporte Petropolis" viraria "ICMS Esporte". O
+    dado dela era mais especifico que o do CRM. Divergencia assim vira relatorio
+    (ver divergent_cells), nao sobrescrita.
+    """
     changes = []
     normalizers = normalizers or {}
     width = max(len(old), len(new))
@@ -276,7 +291,30 @@ def changed_cells(old, new, auto_indices, normalizers=None):
         # Null HubSpot values never erase an existing cell.
         if new[idx] in (None, "") and old[idx] not in (None, ""):
             continue
+        if only_fill_blanks and str(old[idx]).strip() != "":
+            continue
         normalize = normalizers.get(idx, lambda value: value)
         if normalize(old[idx]) != normalize(new[idx]):
             changes.append((idx, old[idx], new[idx]))
     return changes
+
+
+def divergent_cells(old, new, auto_indices, normalizers=None):
+    """Celulas preenchidas dos DOIS lados com valores diferentes.
+
+    Com only_fill_blanks essas nao sao tocadas, mas tambem nao podem sumir: cada
+    uma e uma pergunta real de dado (qual dos dois esta certo, o CRM ou a
+    planilha). Sai no relatorio como [DIVERGE].
+    """
+    saida = []
+    normalizers = normalizers or {}
+    width = max(len(old), len(new))
+    old = list(old) + [""] * (width - len(old))
+    new = list(new) + [""] * (width - len(new))
+    for idx in auto_indices:
+        if str(old[idx]).strip() == "" or str(new[idx]).strip() == "":
+            continue
+        normalize = normalizers.get(idx, lambda value: value)
+        if normalize(old[idx]) != normalize(new[idx]):
+            saida.append((idx, old[idx], new[idx]))
+    return saida
