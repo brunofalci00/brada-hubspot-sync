@@ -35,6 +35,7 @@ from sheets_reporting_financeiro_mensal import (
     load_consolidado, split_vendas, current_cycle, cycle_window, MIN_ROWS_GUARD,
 )
 from sheets_comissoes_ivan import select_cycle, _norm, _digits, utf8_stdout
+from financeiro_match_common import assert_fresh_source
 
 OFICIAL_ID_DEFAULT = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"
 
@@ -518,6 +519,8 @@ def main():
             raise SystemExit(f"[abort] consolidado com {len(rows)} linhas (< {MIN_ROWS_GUARD}).")
         inc, _ = split_vendas(rows)
         print(f"consolidado fonte_ts={fonte_ts} | Match Won total={len(inc)}\n")
+        if args.write:
+            assert_fresh_source(fonte_ts)
         run_match_mes(sh, cycle, inc, args.write, tab=args.tab, hidden=args.hidden)
 
     if do_elab or do_ric:

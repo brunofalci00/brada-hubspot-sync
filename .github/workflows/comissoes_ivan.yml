@@ -1,11 +1,12 @@
-name: Comissoes Ivan - dia 20 (4 frentes)
+name: Comissoes Ivan - dia 20 (5 frentes)
 
 # Automacao da planilha OFICIAL de Comissoes do Ivan (1XVRuIMN...) no fecho do
-# ciclo (dia 20). 4 frentes:
+# ciclo (dia 20). 5 frentes:
 #   1. Controle de Vendas  (sheets_comissoes_ivan.py)      <- consolidado, append.
-#   2. {Mes}_MATCH         (sheets_abas_mensais_ivan.py)   <- consolidado, aba do ciclo.
-#   3. {Mes}_Elaboracao    (sheets_abas_mensais_ivan.py)   <- HubSpot direto.
-#   4. Tabela Ricardo      (sheets_abas_mensais_ivan.py)   <- HubSpot direto.
+#   2. Controle de Cobrancas - Bia (sheets_cobrancas_bia.py) <- consolidado, upsert.
+#   3. {Mes}_MATCH         (sheets_abas_mensais_ivan.py)   <- consolidado, aba do ciclo.
+#   4. {Mes}_Elaboracao    (sheets_abas_mensais_ivan.py)   <- HubSpot direto.
+#   5. Tabela Ricardo      (sheets_abas_mensais_ivan.py)   <- HubSpot direto.
 # SO escreve colunas automaticas; comissoes ficam em branco (Luciana/Ricardo).
 # Junho esta FECHADO (protecao: nao escreve em aba sem coluna tecnica deal_id).
 on:
@@ -43,6 +44,7 @@ jobs:
         run: |
           python ops/_test_comissoes_ivan.py
           python ops/_test_abas_mensais_ivan.py
+          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py ops/criar_props_financeiro_cobrancas.py
 
       - name: Definir ARGS (write/cycle)
         id: args
@@ -64,7 +66,15 @@ jobs:
           echo "sheets_comissoes_ivan.py ${{ steps.args.outputs.args }}"
           python sheets_comissoes_ivan.py ${{ steps.args.outputs.args }}
 
-      - name: Frentes 2-4 — {Mes}_MATCH + {Mes}_Elaboracao + Ricardo
+      - name: Frente 2 — Controle de Cobrancas - Bia (consolidado)
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          echo "sheets_cobrancas_bia.py ${{ steps.args.outputs.args }}"
+          python sheets_cobrancas_bia.py ${{ steps.args.outputs.args }}
+
+      - name: Frentes 3-5 — {Mes}_MATCH + {Mes}_Elaboracao + Ricardo
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
