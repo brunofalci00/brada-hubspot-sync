@@ -147,7 +147,26 @@ def completeness_gaps(row):
 
 
 def source_age_minutes(source_timestamp, now=None):
-    """Aceita ISO ou 'YYYY-MM-DD HH:MM:SS [BRT/UTC]' e retorna idade em minutos."""
+    """Idade em minutos do carimbo `ultima_sync_deals`.
+
+    Formatos aceitos: ISO com offset; 'YYYY-MM-DD HH:MM:SS [BRT/UTC]' com marca
+    explicita; e 'DD/MM/YYYY HH:MM', que e o que o sync.py grava de fato.
+
+    Sobre o fuso do formato brasileiro: `sync.py` usa
+    `datetime.datetime.now().strftime("%d/%m/%Y %H:%M")`, hora LOCAL do runner e
+    sem marca de fuso. O sync roda no GitHub Actions, cujo runner esta em UTC —
+    entao esse carimbo e UTC, nao BRT.
+
+    Isso foi medido em 19/08/2026: o carimbo dizia 12:50 com a hora local em
+    10:39, e o guard calculou idade de -131 min e abortou uma escrita com fonte
+    de 49 minutos. O erro era de exatamente 3 horas, e no sentido PERIGOSO: como
+    a idade saia 180 min menor que a real, uma fonte parada ha ate 4h30 passava
+    como "menos de 90 minutos".
+
+    Ler o formato brasileiro como UTC acerta o caso real (CI). Se alguem rodar o
+    sync na maquina, em BRT, a idade sai 180 min MAIOR que a real e o guard
+    aborta — falha para o lado seguro, que e o que se quer num guard de folha.
+    """
     raw = str(source_timestamp or "").strip()
     if not raw:
         return None
@@ -165,9 +184,13 @@ def source_age_minutes(source_timestamp, now=None):
         match_br = re.search(r"(\d\d)/(\d\d)/(20\d\d)\s+(\d\d:\d\d(?::\d\d)?)", raw)
         if match_br:
             fmt = "%d/%m/%Y %H:%M" if len(match_br.group(4)) == 5 else "%d/%m/%Y %H:%M:%S"
+            # UTC: e o fuso do runner que grava esse carimbo. Ver docstring.
+            tz_br = dt.timezone.utc
+            if "BRT" in raw.upper() or "-03" in raw:
+                tz_br = dt.timezone(dt.timedelta(hours=-3))
             parsed = dt.datetime.strptime(
                 "/".join(match_br.group(i) for i in (1, 2, 3)) + " " + match_br.group(4), fmt
-            ).replace(tzinfo=dt.timezone(dt.timedelta(hours=-3)))
+            ).replace(tzinfo=tz_br)
     if parsed is None:
         return None
     if parsed.tzinfo is None:
@@ -179,7 +202,13 @@ def assert_fresh_source(source_timestamp, max_minutes=90, now=None):
     age = source_age_minutes(source_timestamp, now=now)
     if age is None:
         raise SystemExit("[abort] ultima_sync_deals ausente ou ilegivel; nada escrito.")
-    if age < -5 or age > max_minutes:
+    if age < -5:
+        raise SystemExit(
+            f"[abort] ultima_sync_deals esta {abs(age):.1f} min no FUTURO. Isso nao e fonte "
+            "velha, e fuso ou relogio errado — e escrever assim gravaria dado de origem "
+            "desconhecida em folha. Confira o carimbo na aba _meta da Brada_Dashboard_Deals."
+        )
+    if age > max_minutes:
         raise SystemExit(f"[abort] consolidado stale: ultima_sync_deals ha {age:.1f} min (limite {max_minutes}); nada escrito.")
     return age
 

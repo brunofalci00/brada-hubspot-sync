@@ -14,7 +14,9 @@ from sync import get_sheets_client
 SHEET_ID = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"
 TABS = {
     "Controle de Vendas": {"range": "A1:AF2000", "manual": [8, 9, 12, 13, 20, 21, 22, 23, 24, 25], "formula": [16, 17, 18, 19]},
-    "Controle de Cobranças - Bia": {"range": "A1:AC2000", "manual": [10, 13, 17, 18], "formula": []},
+    # manual = colunas da Bia (Segmento Cultural, VALOR A COBRAR, Data de cobranca,
+    # Data do ultimo contato, resposta) no layout REAL de 21 colunas conferido em 19/08.
+    "Controle de Cobranças - Bia": {"range": "A1:AC2000", "manual": [2, 12, 15, 19, 20], "formula": []},
 }
 
 

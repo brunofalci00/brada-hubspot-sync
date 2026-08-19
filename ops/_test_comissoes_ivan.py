@@ -166,14 +166,30 @@ def test_bia_layout_and_manuals():
 
 def test_freshness():
     now = dt.datetime(2026, 8, 6, 18, 0, tzinfo=dt.timezone.utc)
+    # marca explicita de fuso manda
     assert 59 < common.assert_fresh_source("2026-08-06 14:00:00 BRT", now=now) < 61
-    assert 59 < common.assert_fresh_source("06/08/2026 14:00 831", now=now) < 61
+    # 'DD/MM/YYYY HH:MM' e o que o sync.py grava, com a hora do runner (UTC)
+    assert 59 < common.assert_fresh_source("06/08/2026 17:00 831", now=now) < 61
+    # o mesmo carimbo lido como BRT daria 60 min e passaria; como UTC da 240 e aborta
+    try:
+        common.assert_fresh_source("06/08/2026 14:00 831", now=now)
+    except SystemExit as exc:
+        assert "stale" in str(exc)
+    else:
+        raise AssertionError("240 min deveria abortar (era o bug de 3h)")
     try:
         common.assert_fresh_source("2026-08-06 12:00:00 BRT", now=now)
     except SystemExit as exc:
         assert "stale" in str(exc)
     else:
         raise AssertionError("fonte stale deveria abortar")
+    # carimbo no futuro nao e "stale": e fuso ou relogio errado, e tem mensagem propria
+    try:
+        common.assert_fresh_source("06/08/2026 21:00 831", now=now)
+    except SystemExit as exc:
+        assert "FUTURO" in str(exc)
+    else:
+        raise AssertionError("carimbo no futuro deveria abortar")
 
 
 if __name__ == "__main__":
