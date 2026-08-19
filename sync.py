@@ -2506,8 +2506,28 @@ def write_to_sheets(rows, header, worksheet_name=WORKSHEET_NAME,
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet_name, rows=max(1000, len(rows) + 100), cols=len(header))
 
-    ws.clear()
-    ws.update(values=[header] + rows, range_name="A1")
+    # ESCREVE PRIMEIRO, LIMPA O EXCEDENTE DEPOIS. Nunca o contrario.
+    #
+    # Era `ws.clear()` seguido de `ws.update()`: duas chamadas, e entre elas a aba fica
+    # VAZIA. Em 19/08 o Google devolveu `APIError [503]: The service is currently
+    # unavailable` justamente nessa janela, e `raw_metas_anuais` passou meio dia sem uma
+    # linha — o que derrubou o sync do Backoffice, que se recusa (com razao) a publicar
+    # vazio por cima do que esta no ar.
+    #
+    # Nesta ordem, uma falha no meio deixa a aba com o dado ANTIGO, que e velho mas
+    # verdadeiro. Dado velho quem le percebe; aba vazia derruba a cadeia inteira.
+    valores = [header] + rows
+    ws.update(values=valores, range_name="A1")
+
+    # Sobra da carga anterior, se a nova for menor. `A<n+1>:ZZZ` cobre o resto da aba;
+    # sem isso, encolher de 900 para 6 linhas deixaria 894 linhas fantasma.
+    ultima = len(valores)
+    try:
+        ws.batch_clear([f"A{ultima + 1}:ZZZ"])
+    except Exception as erro:
+        # Nao e fatal: o dado novo JA esta gravado. Sobra de linha antiga e ruim, aba
+        # vazia e pior — e foi o que este bloco existe para nunca mais causar.
+        print(f"[warn] {worksheet_name}: nao deu para limpar a sobra ({erro})")
 
     # Timestamp de ultima sync na aba _meta (se existir)
     try:
@@ -2662,7 +2682,12 @@ def write_performance_sheet(enriched, gc, efetivo_by_deal=None):
         data, header,
         worksheet_name="raw_metas_anuais",
         meta_label="ultima_sync_metas_anuais",
-        meta_range="A3:C3",
+        # A5, e nao A3: o consolidado tambem escrevia em A3:C3 (ver ~2845) e um apagava
+        # o carimbo do outro. Como as metas sao escritas por ULTIMO, o `_meta` mostrava
+        # sempre `ultima_sync_consolidado` — e ficava impossivel saber quando as metas
+        # sincronizaram. Foi assim que se descobriu, em 19/08, que elas nao sincronizavam
+        # ha horas: o carimbo delas nunca aparecia.
+        meta_range="A5:C5",
     )
 
 
@@ -3021,11 +3046,22 @@ def main():
     # raw_metas_anuais: join deals (ano x produto) × metas_anuais pre-computado.
     # Decisao Ivan 04/05: medicao so anual (sazonalidade IR/ISS impede trimestre).
     # Substitui raw_performance/metas_mensais (descontinuados).
+    # NAO engole mais a excecao. Antes era `except: print("[warn] ...")`, e o run terminava
+    # VERDE com `raw_metas_anuais` vazia — o Backoffice quebrava de hora em hora e o unico
+    # lugar que dizia a verdade era uma linha de log que ninguem le. Silencio aqui custou
+    # meio dia de sync quebrado em 19/08.
+    #
+    # O `raise` vem DEPOIS de tudo que ja foi gravado: deals, companies, consolidado e
+    # funil_eventos ja estao na planilha neste ponto. Falhar aqui nao desfaz nada — so
+    # deixa o run vermelho, que e a unica forma de alguem ficar sabendo.
     try:
         gc_perf = get_sheets_client()
         write_performance_sheet(enriched, gc_perf, efetivo_by_deal=efetivo_by_deal)
     except Exception as e:
-        print(f"[warn] Performance sheet falhou: {e}")
+        print(f"[ERRO] raw_metas_anuais falhou: {e}")
+        print("[ERRO] As demais abas foram gravadas. O sync do Backoffice vai recusar")
+        print("[ERRO] publicar metas vazias e falhar tambem, por design.")
+        raise
 
     # Resumo
     ativos = sum(1 for r in enriched if r["e_ativo"])
