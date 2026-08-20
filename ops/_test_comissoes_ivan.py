@@ -165,6 +165,29 @@ def test_bia_layout_and_manuals():
         assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
 
 
+def test_sufixo_de_deal_e_estreito():
+    """So o nome que o HubSpot da a deal sem nome; abreviacao humana nao entra."""
+    # o caso real de 20/08: boilerplate do CRM vazado pra coluna de proponente
+    assert common.tem_sufixo_de_deal(" Instituto Serra dos Órgãos - Novo(a) Deal")
+    assert common.tem_sufixo_de_deal("GameJamPlus - Novo(a) Deal")
+    assert common.tem_sufixo_de_deal("Acme - New Deal")
+    # abreviacao deliberada do Ivan: NAO e sufixo, e tem que continuar de fora
+    assert not common.tem_sufixo_de_deal("EGP BRASIL")
+    assert not common.tem_sufixo_de_deal("Encaminhando")
+    assert not common.tem_sufixo_de_deal("Escola de Dança Missao Intensidade")
+    # a palavra "deal" no meio nao basta: o criterio e o sufixo inteiro
+    assert not common.tem_sufixo_de_deal("Deal Comercio de Alimentos")
+    assert not common.tem_sufixo_de_deal("")
+    assert not common.tem_sufixo_de_deal(None)
+
+
+def test_sufixo_de_deal_e_mesma_entidade_sao_ortogonais():
+    """A mesma celula e 'mesma entidade' E 'suja': por isso precisa de dois testes."""
+    sujo, limpo = " Instituto Serra dos Órgãos - Novo(a) Deal", "Instituto Serra dos Órgãos"
+    assert common.mesma_entidade(sujo, limpo)      # por isso o corretor de entidade PULA
+    assert common.tem_sufixo_de_deal(sujo)         # e por isso precisa da flag propria
+
+
 def test_forca_do_nome_separa_pista_de_prova():
     """Casos reais medidos em 19/08 ao montar o matcher de link do HubSpot."""
     # o falso positivo classico: nome de UM token dentro de um nome maior

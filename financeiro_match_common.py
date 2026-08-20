@@ -383,6 +383,20 @@ def mesma_entidade(a, b):
     return menor <= maior
 
 
+# O HubSpot batiza todo deal criado sem nome como "<Empresa> - Novo(a) Deal". Quando esse
+# nome vaza para a coluna de proponente, o financeiro le boilerplate de CRM num documento
+# de apuracao. Isso NAO e o caso que o `mesma_entidade` protege: ninguem escolheu escrever
+# assim, foi o sistema que preencheu. Por isso ganha regra propria e estreita, que reconhece
+# so o sufixo padrao e nada mais.
+SUFIXOS_DE_DEAL = (" - novo(a) deal", " - new deal")
+
+
+def tem_sufixo_de_deal(valor):
+    """O texto termina com o nome que o HubSpot da a deal sem nome?"""
+    v = (valor or "").strip().lower()
+    return any(v.endswith(s) for s in SUFIXOS_DE_DEAL)
+
+
 # ---------------------------------------------------------------------------
 # Matching de linha de planilha -> negocio do HubSpot
 #
