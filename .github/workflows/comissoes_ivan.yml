@@ -44,7 +44,8 @@ jobs:
         run: |
           python ops/_test_comissoes_ivan.py
           python ops/_test_abas_mensais_ivan.py
-          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py \n            hubspot_financeiro.py ops/criar_props_financeiro_cobrancas.py \n            ops/recuperar_elaboracao_atrasada.py
+          python ops/_test_relatorio_comissoes.py
+          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py hubspot_financeiro.py gerar_relatorio_comissoes_ivan.py ops/criar_props_financeiro_cobrancas.py ops/recuperar_elaboracao_atrasada.py ops/corrigir_proponente_gravado.py
 
       - name: Definir ARGS (write/cycle)
         id: args
