@@ -85,6 +85,23 @@ def termo_de_busca(nome):
     return primeiro if len(primeiro) >= 3 else bruto.strip()
 
 
+def deal_id_do_link(url):
+    """Extrai o id do negocio de um link do HubSpot, ou "" se nao for link de negocio.
+
+    Serve para recuperar a chave que a planilha ja carrega sem saber. Linha antiga do Controle
+    de Vendas nunca teve o `deal_id` gravado na coluna tecnica (a automacao so escreve isso em
+    linha nova), entao a cada rodada a ligacao linha-negocio e reconstruida por adivinhacao a
+    partir de cliente, valor e data. Mas o id esta ali desde 19/08, dentro da URL.
+
+    Devolve "" de proposito para o link de BUSCA (`/objects/0-3/views/...`), que nao aponta para
+    negocio nenhum: linha orfa tem que continuar orfa.
+    """
+    # Aceita os dois formatos: `/record/0-3/{id}` (atual) e `/deal/{id}` (legado, usado ate
+    # 19/08). Recusar o legado perderia a chave de qualquer link antigo que sobreviva.
+    m = re.search(r"/(?:record/0-3|deal)/(\d+)", str(url or ""))
+    return m.group(1) if m else ""
+
+
 def link_busca(nome):
     """Lista de negocios ja filtrada pelo nome. Para linha sem candidato."""
     q = urllib.parse.quote(termo_de_busca(nome))

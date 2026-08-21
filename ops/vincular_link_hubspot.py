@@ -36,7 +36,7 @@ from gspread.utils import rowcol_to_a1
 from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import load_consolidado, parse_brl, parse_closedate
 from financeiro_match_common import (
-    MARCA_BUSCA, PORTAL_ID, forca_do_nome, link_busca, linha_e_dado, money, norm, select_match_won, text_id,
+    MARCA_BUSCA, PORTAL_ID, deal_link, forca_do_nome, link_busca, linha_e_dado, money, norm, select_match_won, text_id,
 )
 from sheets_abas_mensais_ivan import (
     OFICIAL_ID_DEFAULT, load_hubspot_token, resolver_proponentes, search_elaboracao_won, _proponente,
@@ -165,6 +165,9 @@ def main():
                          "formato da URL de lista do HubSpot nao da para validar por API, e "
                          "link morto numa planilha de folha e pior que celula vazia. Ligar "
                          "depois de abrir um no navegador.")
+    ap.add_argument("--refazer", action="store_true",
+                    help="recalcula TODOS os links, ignorando o que ja esta gravado. "
+                         "Para quando a planilha foi reordenada por baixo deles.")
     ap.add_argument("--sheet-id", default=OFICIAL_ID_DEFAULT)
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -219,11 +222,16 @@ def main():
             if not linha_e_dado(nome):
                 continue
             atual_link = str(linha[col_link]).strip()
-            # Link de NEGOCIO e resultado de casamento conferido: nunca se toca.
-            # Link de BUSCA e derivado do nome, entao recalcular e legitimo — foi
-            # assim que "MedWrites Editora / RMed / Asia" virou busca por
-            # "MedWrites Editora", que acha alguma coisa.
-            if atual_link and MARCA_BUSCA not in atual_link:
+            # Link de NEGOCIO e resultado de casamento conferido: nao se toca...
+            # ...EXCETO com --refazer. Em 20/08 essa regra falhou: alguem ordenou o
+            # Controle de Vendas em ordem alfabetica e a coluna do link ficou parada,
+            # porque o intervalo ordenado nao a incluia. As 40 linhas trocaram de lugar
+            # e os 31 links passaram a apontar para o cliente errado, sem ninguem
+            # tocar em nenhum deles. A premissa "link conferido continua conferido"
+            # so vale enquanto a planilha nao se move por baixo dele.
+            #
+            # Link de BUSCA e derivado do nome, entao recalcular sempre foi legitimo.
+            if atual_link and MARCA_BUSCA not in atual_link and not args.refazer:
                 total["JA_TEM"] += 1
                 continue
             if atual_link and MARCA_BUSCA in atual_link and atual_link == link_busca(nome):
