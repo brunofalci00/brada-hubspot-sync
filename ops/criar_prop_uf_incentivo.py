@@ -1,25 +1,32 @@
 # -*- coding: utf-8 -*-
-"""Cria a property `enquadramento_fiscal`: o picklist que diz em qual aba a linha entra.
+"""Cria a property `uf_incentivo`: o UNICO dado que faltava para rotear a planilha do financeiro.
 
-A planilha CLIENTES/MATCH/COMISSAO tem 6 abas, uma por enquadramento, porque cada lei tem rito
-proprio de repasse e cobranca. Escolher a aba errada manda o negocio para o processo fiscal errado.
+A planilha tem 6 abas, uma por enquadramento fiscal. A primeira ideia foi um campo de
+"enquadramento" com as 6 abas como opcoes — e estava errada, porque duplicaria o que
+`lei_principal` ja diz.
 
-O HubSpot nao responde isso hoje: `linha_de_imposto_categoria` da IR/ISS/ICMS mas fica vazia em
-41% dos ganhos, e **o estado nao existe em campo nenhum** — sendo que 4 das 6 abas separam por
-estado. Medido em 20/08: das 78 vendas ganhas, so 29 tem destino; as duas abas de ICMS ficariam
-vazias apesar de existirem 6 negocios de ICMS.
+Medido em 24/08 sobre os 78 ganhos: **a lei deriva a linha de imposto em 41 de 46 casos**, e as
+5 divergencias sao erro de digitacao (as cinco marcadas 'IR' contra o que a lei diz), nao regra.
+`lei_principal` ja tem 'Lei do Bem' no enum, entao ate a aba propria dela sai de la.
 
-Por isso as opcoes sao exatamente os nomes das abas, e nao "imposto" + "UF" separados: o valor
-escolhido JA E o destino, sem regra de derivacao no meio para errar.
+O que a lei NAO diz e o estado. E so isso falta:
 
-E preenchimento UNICO, no fechamento. Nao e manutencao recorrente, entao nao esbarra na regra de
-nao criar campo eterno para o comercial.
+    lei de IR            -> aba IR                  (nao se divide por estado)
+    Lei do Bem           -> aba LEI DO BEM          (e IR, mas o rito e outro)
+    lei de ICMS + UF     -> ICMS RIO / ICMS SP
+    lei de ISS  + UF     -> ISS RIO / ISS SP
 
-Dry-run por padrao. Idempotente: se ja existir, confere as opcoes e nao recria.
+So RJ e SP porque so essas duas tem aba. Se aparecer outro estado, o financeiro decide se cria
+aba; ate la o roteador manda para revisao em vez de inventar destino.
+
+A UF so importa para lei estadual e municipal. Em negocio de IR ela pode ficar vazia sem
+prejuizo — vale lembrar disso antes de marcar como obrigatoria para todo mundo.
+
+Dry-run por padrao. Idempotente.
 
 Uso:
-  python ops/criar_prop_enquadramento.py
-  python ops/criar_prop_enquadramento.py --apply
+  python ops/criar_prop_uf_incentivo.py
+  python ops/criar_prop_uf_incentivo.py --apply
 """
 import argparse
 import json
@@ -34,22 +41,20 @@ from hubspot_financeiro import BASE, load_hubspot_token
 import planilha_leis as pl
 
 URL = f"{BASE}/crm/v3/properties/deals"
-NOME = "enquadramento_fiscal"
+NOME = "uf_incentivo"
 
-# O valor tecnico e o rotulo sao o nome da aba. Manter identicos e proposital: qualquer
-# tradução no meio e mais um lugar para divergir.
 PROP = {
     "name": NOME,
-    "label": "Enquadramento fiscal (aba do financeiro)",
+    "label": "UF do incentivo",
     "type": "enumeration",
     "fieldType": "select",
     "groupName": "dealinformation",
     "formField": False,
-    "description": ("Em qual aba da planilha do financeiro este negocio entra. Cada lei tem rito "
-                    "proprio de repasse e cobranca, entao o enquadramento define o processo. "
-                    "Preencher no fechamento."),
-    "options": [{"label": aba.strip(), "value": aba.strip(), "displayOrder": i, "hidden": False}
-                for i, aba in enumerate(pl.ABAS)],
+    "description": ("Estado da lei de incentivo. So importa em lei estadual (ICMS) e municipal "
+                    "(ISS), onde define o processo fiscal e a aba do financeiro. Em lei federal "
+                    "(IR, Lei do Bem) pode ficar vazio."),
+    "options": [{"label": uf, "value": uf, "displayOrder": i, "hidden": False}
+                for i, uf in enumerate(pl.UFS)],
 }
 
 
@@ -111,10 +116,13 @@ def main():
     if not ok:
         raise SystemExit("[abort] read-back nao confirmou.")
     print()
-    print("FALTA UMA COISA, e nao da para fazer por API no plano Starter:")
-    print("  marcar como OBRIGATORIA para entrar em 'Ganho - Incentivador'.")
-    print("  Sem a trava, o campo nasce e morre vazio — foi o que aconteceu com as 4 properties")
-    print("  financeiras criadas em 06/08, que estao em 0 de 78.")
+    print("FALTA, e nao da para fazer por API no plano Starter:")
+    print("  1. marcar `uf_incentivo` como obrigatoria em 'Ganho - Incentivador'.")
+    print("  2. marcar `lei_principal` tambem: hoje esta em 45 de 78, e e ela que carrega")
+    print("     o imposto e a Lei do Bem. Campo derivado de campo pela metade da meia resposta.")
+    print()
+    print("  Sem trava, campo nasce e morre vazio — as 4 properties financeiras criadas em")
+    print("  06/08 sem trava estao em 0 de 78.")
 
 
 if __name__ == "__main__":

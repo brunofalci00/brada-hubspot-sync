@@ -109,6 +109,30 @@ _PADROES = (
 # Sem o estado, ISS e ICMS nao decidem entre duas abas.
 _SEM_ESTADO = {"ICMS": (ICMS_RIO, ICMS_SP), "ISS": (ISS_RIO, ISS_SP)}
 
+# Cada lei pertence a uma linha de imposto. O mapa e regra fiscal, nao convencao nossa.
+#
+# Este mapa e a razao de NAO existir um campo de "enquadramento": ele seria redundante com
+# `lei_principal`, que ja diz tudo menos o estado. Medido em 24/08 nos 78 ganhos: a lei deriva
+# o imposto em 41 de 46 casos, e as 5 divergencias sao erro de digitacao (as cinco marcadas
+# 'IR' contra o que a lei diz), nao regra. Ou seja, `linha_de_imposto_categoria` ja era
+# derivavel antes de qualquer campo novo.
+LEI_PARA_IMPOSTO = {
+    "ROUANET": "IR", "ESPORTE FEDERAL": "IR", "FIA": "IR", "IDOSO": "IR",
+    "PRONAS": "IR", "PRONON": "IR", "AUDIOVISUAL": "IR",
+    "ESPORTE ESTADUAL": "ICMS", "CULTURA ESTADUAL": "ICMS", "RECICLAGEM": "ICMS",
+    "CULTURA MUNICIPAL": "ISS",
+}
+
+# A Lei do Bem e IR, mas tem aba propria no financeiro porque o rito de comprovacao e outro.
+# Por isso ela sai da regra geral em vez de virar excecao dentro dela.
+LEI_COM_ABA_PROPRIA = {"LEI DO BEM": LEI_DO_BEM}
+
+# So RJ e SP porque so essas duas tem aba. Se aparecer outro estado, o financeiro decide se
+# cria aba; ate la o roteador manda para revisao em vez de inventar destino.
+UFS = ("RJ", "SP")
+_UF_PARA_ABA = {("ICMS", "RJ"): ICMS_RIO, ("ICMS", "SP"): ICMS_SP,
+                ("ISS", "RJ"): ISS_RIO, ("ISS", "SP"): ISS_SP}
+
 
 def _norm(texto):
     return re.sub(r"\s+", " ", str(texto or "")).strip().upper()
@@ -123,39 +147,45 @@ def enquadramento_do_dealname(dealname):
     return ""
 
 
-def rotear_aba(props, enquadramento_manual=""):
+def rotear_aba(props):
     """Em qual aba a linha entra. Devolve (aba, confianca, motivo).
 
-    Confianca:
-      ALTA    grava
-      MEDIA   relatorio, nao grava (sinal existe mas nao fecha o estado)
-      ORFA    relatorio, nao grava (nenhum sinal)
+    Deriva de DOIS campos, e nao de um terceiro criado so para isso:
 
-    A cascata vai do sinal escrito por quem fecha o negocio para o sinal derivado. Nunca chuta
-    entre duas abas: um erro aqui manda o negocio para o processo fiscal errado.
+      `lei_principal`  ja diz a linha de imposto (ver LEI_PARA_IMPOSTO) e ja tem 'Lei do Bem'
+      `uf_incentivo`   o unico dado que faltava, e so importa para ICMS e ISS
+
+    Confianca: ALTA grava; MEDIA e ORFA vao para revisao. Nunca escolhe entre RIO e SP no
+    chute — errar manda o negocio para o rito fiscal errado, que e pior que nao escrever.
     """
-    # 1. O picklist que ainda nao existe. Quando existir, encerra a discussao aqui.
-    manual = _norm(enquadramento_manual)
-    if manual:
-        for aba in ABAS:
-            if _norm(aba) == manual:
-                return aba, "ALTA", "campo de enquadramento preenchido no card"
-        return "", "MEDIA", f"enquadramento {enquadramento_manual!r} nao e uma das 6 abas"
+    lei = _norm(props.get("lei_principal"))
+    uf = _norm(props.get("uf_incentivo"))
 
-    # 2. O nome do negocio, que na pratica acerta mais que a property.
-    pelo_nome = enquadramento_do_dealname(props.get("dealname"))
-    if pelo_nome:
-        return pelo_nome, "ALTA", "enquadramento no nome do negocio"
+    if not lei:
+        # O nome do negocio como ultimo recurso: quem nomeia e quem fecha, e as vezes escreve
+        # o enquadramento la. Nao substitui a lei, mas evita perder o negocio.
+        pelo_nome = enquadramento_do_dealname(props.get("dealname"))
+        if pelo_nome:
+            return pelo_nome, "MEDIA", "lei vazia; enquadramento lido do nome do negocio"
+        return "", "ORFA", "sem lei principal e sem pista no nome do negocio"
 
-    # 3. A property de imposto. Sozinha so decide o IR, que nao se divide por estado.
-    imposto = _norm(props.get("linha_de_imposto_categoria"))
+    if lei in LEI_COM_ABA_PROPRIA:
+        return LEI_COM_ABA_PROPRIA[lei], "ALTA", f"lei {lei} tem aba propria"
+
+    imposto = LEI_PARA_IMPOSTO.get(lei)
+    if not imposto:
+        return "", "ORFA", f"lei {lei!r} nao esta no mapa de imposto"
+
     if imposto == "IR":
-        return IR, "ALTA", "linha_de_imposto_categoria = IR (nao se divide por estado)"
-    if imposto in _SEM_ESTADO:
-        a, b = _SEM_ESTADO[imposto]
-        return "", "MEDIA", f"imposto {imposto}, mas falta o estado: pode ser {a} ou {b}"
+        return IR, "ALTA", "lei de IR, que nao se divide por estado"
 
-    return "", "ORFA", "sem enquadramento no nome, no campo, nem na lei"
+    if not uf:
+        a, b = _SEM_ESTADO[imposto]
+        return "", "MEDIA", f"lei de {imposto}, mas falta a UF: pode ser {a} ou {b}"
+    destino = _UF_PARA_ABA.get((imposto, uf))
+    if not destino:
+        return "", "MEDIA", f"UF {uf!r} nao tem aba (so {' e '.join(UFS)})"
+    return destino, "ALTA", f"lei de {imposto} + UF {uf}"
 
 
 # --------------------------------------------------------------------------- linha

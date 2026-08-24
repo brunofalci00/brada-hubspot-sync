@@ -40,9 +40,7 @@ PROPS = ["dealname", "closedate", "amount", "valor_do_aporte", "percentual_brada
          "tipo_de_proponente", "nome_do_projeto", "numero_do_projeto", "nome_do_proponente",
          "lei_principal", "linha_de_imposto_categoria", "nome_contato_proponente",
          "email_proponente", "telefone_proponente", "numero_parcelas_financeiro",
-         "hs_v2_date_entered_current_stage"]
-
-CAMPO_ENQUADRAMENTO = "enquadramento_fiscal"
+         "uf_incentivo", "hs_v2_date_entered_current_stage"]
 
 # Marco zero. A contabilizacao comeca aqui: o que fechou antes a Jaqueline sobe a mao, e a
 # automacao nao toca. Sem o corte no CODIGO, e nao num acordo verbal, as duas brigam pela
@@ -134,16 +132,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     token = load_hubspot_token()
-    campos = list(PROPS)
-    # O picklist pode nao existir ainda; pedir property inexistente derruba a busca.
-    try:
-        _get(f"{BASE}/crm/v3/properties/deals/{CAMPO_ENQUADRAMENTO}", token)
-        campos.append(CAMPO_ENQUADRAMENTO)
-        tem_campo = True
-    except Exception:
-        tem_campo = False
-
-    deals = buscar_ganhos(token, campos)
+    deals = buscar_ganhos(token, PROPS)
     resolver_patrocinador(deals, token)
 
     if args.desde:
@@ -157,8 +146,7 @@ def main():
             print(f"   ({len(sem_data)} sem data de entrada; ficam de fora por seguranca)")
 
     print("=" * 108)
-    print(f"ROTEAMENTO — {len(deals)} negocio(s) ganho(s) | campo "
-          f"'{CAMPO_ENQUADRAMENTO}' {'EXISTE' if tem_campo else 'NAO EXISTE ainda'}")
+    print(f"ROTEAMENTO — {len(deals)} negocio(s) ganho(s) | por lei_principal + uf_incentivo")
     print("=" * 108)
 
     por_conf = collections.Counter()
@@ -166,7 +154,7 @@ def main():
     pendentes = collections.defaultdict(list)
     for d in deals:
         p = d["properties"]
-        aba, conf, motivo = pl.rotear_aba(p, p.get(CAMPO_ENQUADRAMENTO, "") if tem_campo else "")
+        aba, conf, motivo = pl.rotear_aba(p)
         por_conf[conf] += 1
         if conf == "ALTA":
             por_aba[aba] += 1
@@ -185,7 +173,7 @@ def main():
 
     print()
     print("-" * 108)
-    print("QUEM NAO DECIDE (precisa do campo de enquadramento, ou de gente)")
+    print("QUEM NAO DECIDE (falta lei_principal ou uf_incentivo)")
     print("-" * 108)
     for conf in ("MEDIA", "ORFA"):
         for did, p, motivo in pendentes.get(conf, []):
@@ -288,9 +276,9 @@ def main():
     print(f"TOTAL: {total} linha(s)")
     if not args.write:
         print("[dry-run] nada escrito. Use --write.")
-    if not tem_campo:
-        print(f"[atencao] sem '{CAMPO_ENQUADRAMENTO}' preenchido, "
-              f"{por_conf['MEDIA'] + por_conf['ORFA']} negocio(s) nao tem destino.")
+    if por_conf["MEDIA"] or por_conf["ORFA"]:
+        print(f"[atencao] {por_conf['MEDIA'] + por_conf['ORFA']} negocio(s) sem destino: "
+              f"falta lei_principal ou uf_incentivo no card.")
 
 
 if __name__ == "__main__":

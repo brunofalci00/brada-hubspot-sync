@@ -33,45 +33,69 @@ def test_nome_do_negocio_decide_as_seis_abas():
     assert pl.enquadramento_do_dealname("") == ""
 
 
-def test_o_campo_manual_vence_o_nome():
-    """Quando o picklist existir, ele encerra a discussao: e escolha explicita de quem sabe."""
-    d = deal(dealname="Fulano - ICMS RIO - Esporte")
-    aba, conf, _m = pl.rotear_aba(d["properties"], enquadramento_manual="ISS SP")
-    assert (aba, conf) == (pl.ISS_SP, "ALTA")
+def test_lei_de_ir_decide_sozinha_porque_nao_se_divide_por_estado():
+    for lei in ("Rouanet", "Esporte Federal", "FIA", "Idoso", "PRONAS", "PRONON", "Audiovisual"):
+        aba, conf, _m = pl.rotear_aba({"lei_principal": lei})
+        assert (aba, conf) == (pl.IR, "ALTA"), lei
 
 
-def test_o_nome_vence_a_property_de_imposto():
-    """O deal da MATIFIC tem linha_de_imposto_categoria=IR e se chama 'ISS SP'. A Jaqueline
-    seguiu o nome, e estava certa: a property e que esta errada nesse card."""
-    d = deal(dealname="MATIFIC - ISS SP- Promac", linha_de_imposto_categoria="IR")
-    aba, conf, _m = pl.rotear_aba(d["properties"])
-    assert (aba, conf) == (pl.ISS_SP, "ALTA")
+def test_lei_do_bem_tem_aba_propria_mesmo_sendo_ir():
+    """E IR, mas o rito de comprovacao e outro, entao o financeiro separou."""
+    aba, conf, motivo = pl.rotear_aba({"lei_principal": "Lei do Bem"})
+    assert (aba, conf) == (pl.LEI_DO_BEM, "ALTA")
+    assert "aba propria" in motivo
 
 
-def test_ir_decide_sozinho_porque_nao_se_divide_por_estado():
-    d = deal(dealname="Empresa sem pista", linha_de_imposto_categoria="IR")
-    aba, conf, _m = pl.rotear_aba(d["properties"])
-    assert (aba, conf) == (pl.IR, "ALTA")
+def test_lei_estadual_e_municipal_precisam_da_uf():
+    casos = [("Esporte Estadual", "RJ", pl.ICMS_RIO), ("Esporte Estadual", "SP", pl.ICMS_SP),
+             ("Cultura Estadual", "RJ", pl.ICMS_RIO), ("Reciclagem", "SP", pl.ICMS_SP),
+             ("Cultura Municipal", "RJ", pl.ISS_RIO), ("Cultura Municipal", "SP", pl.ISS_SP)]
+    for lei, uf, esperado in casos:
+        aba, conf, _m = pl.rotear_aba({"lei_principal": lei, "uf_incentivo": uf})
+        assert (aba, conf) == (esperado, "ALTA"), f"{lei} {uf}"
 
 
-def test_iss_e_icms_sem_estado_vao_para_revisao_e_nao_para_o_chute():
-    """Escolher entre RIO e SP no chute manda o negocio para o processo fiscal errado."""
-    for imposto, opcoes in (("ICMS", "ICMS RIO"), ("ISS", "ISS RIO")):
-        d = deal(dealname="Empresa sem pista", linha_de_imposto_categoria=imposto)
-        aba, conf, motivo = pl.rotear_aba(d["properties"])
+def test_sem_uf_vai_para_revisao_e_nao_para_o_chute():
+    """Escolher entre RIO e SP no chute manda o negocio para o rito fiscal errado."""
+    for lei, opcao in (("Esporte Estadual", "ICMS RIO"), ("Cultura Municipal", "ISS RIO")):
+        aba, conf, motivo = pl.rotear_aba({"lei_principal": lei})
         assert aba == "" and conf == "MEDIA"
-        assert opcoes in motivo and "falta o estado" in motivo
+        assert opcao in motivo and "falta a UF" in motivo
 
 
-def test_sem_sinal_nenhum_e_orfa():
-    aba, conf, _m = pl.rotear_aba(deal(dealname="Empresa X")["properties"])
+def test_uf_sem_aba_nao_inventa_destino():
+    aba, conf, motivo = pl.rotear_aba({"lei_principal": "Cultura Municipal", "uf_incentivo": "MG"})
+    assert aba == "" and conf == "MEDIA" and "nao tem aba" in motivo
+
+
+def test_sem_lei_o_nome_do_negocio_e_ultimo_recurso():
+    """Nao substitui a lei, mas evita perder o negocio de vista. Fica em MEDIA de proposito."""
+    aba, conf, motivo = pl.rotear_aba({"dealname": "Galiotto - ICMS RIO - Esporte"})
+    assert (aba, conf) == (pl.ICMS_RIO, "MEDIA")
+    assert "lei vazia" in motivo
+
+
+def test_sem_lei_e_sem_pista_e_orfa():
+    aba, conf, _m = pl.rotear_aba({"dealname": "Empresa X"})
     assert (aba, conf) == ("", "ORFA")
 
 
-def test_enquadramento_manual_invalido_nao_vira_aba():
-    """Digitar qualquer coisa no campo nao pode criar destino."""
-    aba, conf, motivo = pl.rotear_aba(deal()["properties"], enquadramento_manual="ISS BAHIA")
-    assert aba == "" and conf == "MEDIA" and "nao e uma das 6 abas" in motivo
+def test_lei_fora_do_mapa_nao_vira_destino():
+    aba, conf, motivo = pl.rotear_aba({"lei_principal": "Lei Inventada"})
+    assert aba == "" and conf == "ORFA" and "nao esta no mapa" in motivo
+
+
+def test_o_mapa_cobre_todo_o_enum_de_lei_principal():
+    """As 12 opcoes reais do picklist do HubSpot, conferidas em 24/08.
+
+    Lei que entra no enum e nao entra no mapa vira orfa em silencio.
+    """
+    enum = ["Rouanet", "Esporte Federal", "Esporte Estadual", "Lei do Bem", "FIA", "Idoso",
+            "Cultura Estadual", "Cultura Municipal", "Reciclagem", "PRONAS", "PRONON",
+            "Audiovisual"]
+    for lei in enum:
+        chave = pl._norm(lei)
+        assert chave in pl.LEI_PARA_IMPOSTO or chave in pl.LEI_COM_ABA_PROPRIA, lei
 
 
 # ------------------------------------------------------------------ linha
