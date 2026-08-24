@@ -31,7 +31,14 @@ DEFAULT_GAPS_SHEET_ID = "1GQe6ksTrQnoWNtFm2BF3WblkHiaNGdKK7ycf1qx-oSs"
 # CSV no proprio repo. Casos onde so o Ivan sabe qual e' a empresa correta
 # (multiplas opcoes de CNPJ, BAIXADAs, ambiguidade) — atribui esses gaps
 # explicitamente a "Ivan Amaral" na Sheet, com opcoes pre-listadas.
-OVERRIDES_IVAN_PATH = os.path.join(os.path.dirname(__file__), "overrides_ivan_companies.csv")
+# O arquivo saiu do repo: este e PUBLICO, e o CSV carregava nome de empresa, CNPJ e nota
+# comercial interna ("mover deal pra Perdido") de 12 clientes e prospects. Nenhum consumidor
+# le as COLUNAS — o unico uso e `if cid in overrides_ivan`, pertencimento pela chave — entao
+# tirar o arquivo daqui nao custa funcionalidade. O loader ja trata ausencia devolvendo {}.
+OVERRIDES_IVAN_PATH = os.environ.get(
+    "BRADA_OVERRIDES_IVAN_PATH",
+    os.path.expanduser("~/.brada-secrets/overrides_ivan_companies.csv"),
+)
 
 LEIS = ["valor_lei_rouanet", "valor_lei_do_esporte", "valor_lei_do_esporte_estadual",
         "valor_lei_do_bem", "valor_lei_da_cultura", "valor_lei_da_cultura_municipal",

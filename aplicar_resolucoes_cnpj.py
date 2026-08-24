@@ -26,7 +26,14 @@ from sync import get_sheets_client
 GAPS_SHEET_ID = os.environ.get("GAPS_SHEET_ID", "1GQe6ksTrQnoWNtFm2BF3WblkHiaNGdKK7ycf1qx-oSs")
 ABA_NAME = "Resolucoes CNPJ — Ivan"
 DIR = os.path.dirname(__file__)
-OVERRIDES_PATH = os.path.join(DIR, "overrides_ivan_companies.csv")
+# O arquivo saiu do repo: este e PUBLICO, e o CSV carregava nome de empresa, CNPJ e nota
+# comercial interna ("mover deal pra Perdido") de 12 clientes e prospects. Nenhum consumidor
+# le as COLUNAS — o unico uso e `if cid in overrides_ivan`, pertencimento pela chave — entao
+# tirar o arquivo daqui nao custa funcionalidade. O loader ja trata ausencia devolvendo {}.
+OVERRIDES_PATH = os.environ.get(
+    "BRADA_OVERRIDES_IVAN_PATH",
+    os.path.expanduser("~/.brada-secrets/overrides_ivan_companies.csv"),
+)
 
 
 def parse_companies():

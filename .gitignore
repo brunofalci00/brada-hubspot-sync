@@ -15,3 +15,6 @@ sprint2_media.csv
 sprint2_baixa.csv
 sprint2_*.json
 brasilapi_cache.json
+
+# Dado comercial (nome de empresa, CNPJ, nota interna). Este repo e PUBLICO.
+overrides_ivan_companies.csv
