@@ -64,6 +64,28 @@ LAYOUT = {
         "pct": 13, "valor_comissao": 14}},
 }
 
+# As duas colunas tecnicas ficam no INICIO de cada aba, abertas por
+# ops/preparar_abas_planilha_leis.py em 20/08:
+#
+#   A = deal_id       (oculta)  a chave que liga a linha ao negocio
+#   B = Link HubSpot  (visivel) o financeiro abre o negocio e ve recibo e anexo
+#
+# No inicio, e nao no fim, porque coluna no comeco viaja junto com qualquer selecao que
+# comece em A. Em 20/08 a coluna de link do Controle de Vendas ficou parada numa ordenacao
+# alfabetica e 31 de 31 links passaram a apontar para o cliente errado.
+#
+# O LAYOUT acima descreve as posicoes DENTRO do bloco do financeiro; o deslocamento fica
+# aqui, num lugar so, para que abrir outra coluna tecnica um dia mude uma constante.
+COL_DEAL_ID = 0
+COL_LINK = 1
+OFFSET = 2
+
+
+def pos(aba, chave):
+    """Posicao final da coluna na aba, ja contando as tecnicas do inicio."""
+    return LAYOUT[aba]["cols"][chave] + OFFSET
+
+
 # Cabecalho esperado da PRIMEIRA coluna de cada aba, para a trava. Conferir a planilha inteira
 # nao serve: o financeiro mexe nas colunas de cobranca o tempo todo, e travar ali so produz
 # alarme falso — foi a licao do gerador do relatorio em 20/08.
@@ -170,20 +192,28 @@ def valor_da_comissao(t_aporte, percentual):
         return None
 
 
-def build_row(deal, aba, valor_match=""):
+def deal_link(deal_id, portal="50771078"):
+    return f"https://app.hubspot.com/contacts/{portal}/record/0-3/{deal_id}"
+
+
+def build_row(deal, aba, valor_match="", deal_id=""):
     """Monta a linha da aba, so com as colunas que a automacao sabe preencher.
 
     Toda posicao nao mapeada fica vazia de proposito: e coluna de cobranca ou de rito fiscal,
     que o financeiro preenche. O script nunca escreve nelas.
     """
     cols = LAYOUT[aba]["cols"]
-    largura = max(cols.values()) + 1
+    largura = max(cols.values()) + 1 + OFFSET
     linha = [""] * largura
     p = deal.get("properties", deal)
 
     def por(chave, valor):
         if chave in cols and valor not in (None, ""):
-            linha[cols[chave]] = valor
+            linha[pos(aba, chave)] = valor
+
+    if deal_id:
+        linha[COL_DEAL_ID] = str(deal_id)
+        linha[COL_LINK] = deal_link(deal_id)
 
     pct = p.get("percentual_brada")
     aporte = p.get("valor_do_aporte") or p.get("amount")

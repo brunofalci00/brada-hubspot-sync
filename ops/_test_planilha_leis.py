@@ -76,9 +76,16 @@ def test_enquadramento_manual_invalido_nao_vira_aba():
 
 # ------------------------------------------------------------------ linha
 
-def test_cada_aba_tem_a_primeira_coluna_no_patrocinador():
+def test_as_duas_tecnicas_ficam_no_inicio_de_toda_aba():
+    """Coluna no comeco viaja junto com qualquer ordenacao que comece em A.
+
+    Em 20/08 a coluna do link ficou parada numa ordenacao alfabetica e 31 de 31 links
+    passaram a apontar para o cliente errado. E o que este teste impede de voltar.
+    """
+    assert (pl.COL_DEAL_ID, pl.COL_LINK, pl.OFFSET) == (0, 1, 2)
     for aba in pl.ABAS:
-        assert pl.LAYOUT[aba]["cols"]["patrocinador"] == 0
+        assert pl.LAYOUT[aba]["cols"]["patrocinador"] == 0   # dentro do bloco do financeiro
+        assert pl.pos(aba, "patrocinador") == 2              # depois das duas tecnicas
 
 
 def test_lei_do_bem_nao_tem_projeto_nem_proponente():
@@ -92,20 +99,24 @@ def test_linha_cai_nas_posicoes_da_aba():
     d = deal(dealname="X - ICMS RIO", nome_do_projeto="CRAQUE DO AMANHA",
              numero_do_projeto="SEI-1438", nome_do_proponente="CENTRO DE ESTUDO",
              lei_principal="Esporte Estadual", _empresa_associada="DIFFUCAP")
-    linha = pl.build_row(d, pl.ICMS_RIO)
-    cols = pl.LAYOUT[pl.ICMS_RIO]["cols"]
-    assert linha[cols["patrocinador"]] == "DIFFUCAP"
-    assert linha[cols["projeto"]] == "CRAQUE DO AMANHA"
-    assert linha[cols["numero"]] == "SEI-1438"
-    assert linha[cols["proponente"]] == "CENTRO DE ESTUDO"
-    assert linha[cols["obs"]] == "EXTERNO"
-    assert linha[cols["match"]] == "17/08/2026"
+    linha = pl.build_row(d, pl.ICMS_RIO, deal_id="64058925378")
+    P = lambda k: linha[pl.pos(pl.ICMS_RIO, k)]
+    assert P("patrocinador") == "DIFFUCAP"
+    assert P("projeto") == "CRAQUE DO AMANHA"
+    assert P("numero") == "SEI-1438"
+    assert P("proponente") == "CENTRO DE ESTUDO"
+    assert P("obs") == "EXTERNO"
+    assert P("match") == "17/08/2026"
+    # a chave e o link, que sao o que sobrevive a uma reordenacao
+    assert linha[pl.COL_DEAL_ID] == "64058925378"
+    assert linha[pl.COL_LINK].endswith("/record/0-3/64058925378")
 
 
 def test_nao_escreve_em_coluna_de_cobranca():
     """Tudo que nao e mapeado fica vazio: e cobranca ou rito fiscal, e e do financeiro."""
-    linha = pl.build_row(deal(dealname="X - ICMS RIO"), pl.ICMS_RIO)
-    mapeadas = set(pl.LAYOUT[pl.ICMS_RIO]["cols"].values())
+    linha = pl.build_row(deal(dealname="X - ICMS RIO"), pl.ICMS_RIO, deal_id="1")
+    mapeadas = {pl.pos(pl.ICMS_RIO, k) for k in pl.LAYOUT[pl.ICMS_RIO]["cols"]}
+    mapeadas |= {pl.COL_DEAL_ID, pl.COL_LINK}
     for i, celula in enumerate(linha):
         if i not in mapeadas:
             assert celula == "", f"coluna {i} deveria ficar vazia, veio {celula!r}"
@@ -123,9 +134,8 @@ def test_comissao_e_percentual_sobre_o_aporte():
 def test_valor_do_match_nao_se_confunde_com_a_comissao():
     """Sao duas receitas: R$ 700 fixo do patrocinador, e a % do proponente."""
     linha = pl.build_row(deal(dealname="X - ICMS RIO"), pl.ICMS_RIO, valor_match="700")
-    cols = pl.LAYOUT[pl.ICMS_RIO]["cols"]
-    assert linha[cols["valor_match"]] == "700"
-    assert linha[cols["valor_comissao"]] == "4.000,00"
+    assert linha[pl.pos(pl.ICMS_RIO, "valor_match")] == "700"
+    assert linha[pl.pos(pl.ICMS_RIO, "valor_comissao")] == "4.000,00"
 
 
 def test_numeros_e_datas_em_pt_br():
