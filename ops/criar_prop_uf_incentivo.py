@@ -50,9 +50,9 @@ PROP = {
     "fieldType": "select",
     "groupName": "dealinformation",
     "formField": False,
-    "description": ("Estado da lei de incentivo. So importa em lei estadual (ICMS) e municipal "
-                    "(ISS), onde define o processo fiscal e a aba do financeiro. Em lei federal "
-                    "(IR, Lei do Bem) pode ficar vazio."),
+    "description": ("Estado da lei de incentivo. Em lei estadual (ICMS) e municipal (ISS) define "
+                    "o processo fiscal e a aba do financeiro. Em lei federal (IR, Lei do Bem) "
+                    "escolha 'Federal': o campo e obrigatorio e a lei nao tem estado."),
     "options": [{"label": uf, "value": uf, "displayOrder": i, "hidden": False}
                 for i, uf in enumerate(pl.UFS)],
 }

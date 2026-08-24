@@ -127,9 +127,16 @@ LEI_PARA_IMPOSTO = {
 # Por isso ela sai da regra geral em vez de virar excecao dentro dela.
 LEI_COM_ABA_PROPRIA = {"LEI DO BEM": LEI_DO_BEM}
 
-# So RJ e SP porque so essas duas tem aba. Se aparecer outro estado, o financeiro decide se
-# cria aba; ate la o roteador manda para revisao em vez de inventar destino.
-UFS = ("RJ", "SP")
+# RJ e SP porque so essas duas tem aba. Se aparecer outro estado, o financeiro decide se cria
+# aba; ate la o roteador manda para revisao em vez de inventar destino.
+#
+# FEDERAL existe para resolver um conflito real: a UF e obrigatoria no fechamento, mas lei de IR
+# e Lei do Bem nao tem estado. Sem essa opcao, quem fecha um IR e forcado a escolher RJ ou SP e
+# a mentir no campo. Com ela, "nao se aplica" vira resposta explicita — e o dado fica melhor do
+# que se o campo fosse opcional, porque distingue **e federal** de **esqueceram de preencher**.
+FEDERAL = "Federal"
+UFS = ("RJ", "SP", FEDERAL)
+UFS_COM_ABA = ("RJ", "SP")
 _UF_PARA_ABA = {("ICMS", "RJ"): ICMS_RIO, ("ICMS", "SP"): ICMS_SP,
                 ("ISS", "RJ"): ISS_RIO, ("ISS", "SP"): ISS_SP}
 
@@ -177,14 +184,20 @@ def rotear_aba(props):
         return "", "ORFA", f"lei {lei!r} nao esta no mapa de imposto"
 
     if imposto == "IR":
+        # UF de estado num negocio federal e contradicao: um dos dois campos esta errado.
+        if uf and uf != _norm(FEDERAL):
+            return IR, "MEDIA", f"lei federal de IR, mas a UF diz {uf}: conferir qual esta certo"
         return IR, "ALTA", "lei de IR, que nao se divide por estado"
 
+    # Daqui pra baixo a lei e estadual ou municipal, entao a UF decide a aba.
+    if uf == _norm(FEDERAL):
+        return "", "MEDIA", f"lei de {imposto} marcada como {FEDERAL}: uma das duas esta errada"
     if not uf:
         a, b = _SEM_ESTADO[imposto]
         return "", "MEDIA", f"lei de {imposto}, mas falta a UF: pode ser {a} ou {b}"
     destino = _UF_PARA_ABA.get((imposto, uf))
     if not destino:
-        return "", "MEDIA", f"UF {uf!r} nao tem aba (so {' e '.join(UFS)})"
+        return "", "MEDIA", f"UF {uf!r} nao tem aba (so {' e '.join(UFS_COM_ABA)})"
     return destino, "ALTA", f"lei de {imposto} + UF {uf}"
 
 

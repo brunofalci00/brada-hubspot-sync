@@ -63,6 +63,29 @@ def test_sem_uf_vai_para_revisao_e_nao_para_o_chute():
         assert opcao in motivo and "falta a UF" in motivo
 
 
+def test_federal_e_resposta_valida_para_lei_de_ir():
+    """A UF e obrigatoria no fechamento, mas lei de IR nao tem estado.
+
+    Sem a opcao Federal, quem fecha um IR e forcado a escolher RJ ou SP e a mentir no campo.
+    """
+    for lei in ("Rouanet", "Esporte Federal", "Lei do Bem"):
+        aba, conf, _m = pl.rotear_aba({"lei_principal": lei, "uf_incentivo": pl.FEDERAL})
+        assert conf == "ALTA", lei
+
+
+def test_uf_de_estado_em_lei_federal_e_contradicao():
+    """Um dos dois campos esta errado, e o roteador nao escolhe qual."""
+    aba, conf, motivo = pl.rotear_aba({"lei_principal": "Rouanet", "uf_incentivo": "SP"})
+    assert (aba, conf) == (pl.IR, "MEDIA")
+    assert "conferir qual esta certo" in motivo
+
+
+def test_federal_em_lei_estadual_e_contradicao():
+    aba, conf, motivo = pl.rotear_aba({"lei_principal": "Esporte Estadual",
+                                       "uf_incentivo": pl.FEDERAL})
+    assert aba == "" and conf == "MEDIA" and "uma das duas esta errada" in motivo
+
+
 def test_uf_sem_aba_nao_inventa_destino():
     aba, conf, motivo = pl.rotear_aba({"lei_principal": "Cultura Municipal", "uf_incentivo": "MG"})
     assert aba == "" and conf == "MEDIA" and "nao tem aba" in motivo
