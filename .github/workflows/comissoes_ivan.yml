@@ -46,7 +46,7 @@ jobs:
           python ops/_test_abas_mensais_ivan.py
           python ops/_test_relatorio_comissoes.py
           python ops/_test_planilha_leis.py
-          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py hubspot_financeiro.py gerar_relatorio_comissoes_ivan.py ops/criar_props_financeiro_cobrancas.py ops/recuperar_elaboracao_atrasada.py ops/corrigir_proponente_gravado.py ops/mover_para_ganho.py planilha_leis.py ops/alimentar_planilha_leis.py
+          python -m py_compile financeiro_match_common.py sheets_cobrancas_bia.py hubspot_financeiro.py gerar_relatorio_comissoes_ivan.py ops/criar_props_financeiro_cobrancas.py ops/recuperar_elaboracao_atrasada.py ops/corrigir_proponente_gravado.py ops/mover_para_ganho.py ops/gerar_mapa_colunas.py ops/criar_prop_uf_incentivo.py ops/preparar_abas_planilha_leis.py planilha_leis.py ops/alimentar_planilha_leis.py
 
       - name: Definir ARGS (write/cycle)
         id: args
