@@ -13,7 +13,7 @@ from sheets_reporting_financeiro_mensal import (
     MIN_ROWS_GUARD, current_cycle, fmt_date_br, load_consolidado, map_lei, parse_closedate,
 )
 from financeiro_match_common import (
-    assert_fresh_source, changed_cells, completeness_gaps, deal_link,
+    assert_fresh_source, changed_cells, blocking_gaps, completeness_gaps, deal_link,
     digits as _digits, interno_externo, money, norm as _norm, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
@@ -137,6 +137,9 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--so-append", action="store_true",
+                    help="grava APENAS linha nova; nao toca em linha existente. Use enquanto a "
+                         "reconciliacao por conteudo nao for confiavel.")
     ap.add_argument("--sheet-id", default=OFICIAL_ID_DEFAULT)
     ap.add_argument("--ws", default=CV_WS)
     ap.add_argument("--cycle", default=None)
@@ -171,10 +174,17 @@ def main():
     changes, incomplete = [], []
     for match in matches:
         deal, record = match["deal"], match["row"]
+        # A lacuna que IMPEDE a linha de existir e a que trava a escrita; a de preenchimento
+        # so vira pendencia. Ate 25/08 os dois caminhos usavam `completeness_gaps`, e como as 4
+        # properties financeiras estao em 0 de 78 desde que foram criadas em 06/08, TODA linha
+        # tinha lacuna e a frente parou de escrever — rodava, relatava e nao gravava nada.
+        # O docstring do proprio `blocking_gaps` ja mandava usar ele para decidir escrita.
         gaps = completeness_gaps(deal)
-        if gaps:
+        if blocking_gaps(deal):
             incomplete.append((deal, gaps, record["row_number"]))
             continue
+        if gaps:
+            incomplete.append((deal, gaps, record["row_number"]))
         new = build_row(deal)
         for idx, old, value in changed_cells(record["cells"], new, AUTO_INDICES, {AUTO["valor"]: money, AUTO["data"]: sheet_date, AUTO["telefone"]: _digits, AUTO["numero"]: text_id, AUTO["tech"]: text_id}):
             changes.append((record["row_number"], idx, old, value, deal))
@@ -182,11 +192,20 @@ def main():
     for deal in to_append:
         gaps = completeness_gaps(deal)
         if gaps:
-            incomplete.append((deal, gaps, None))
-        else:
-            append_ok.append(deal)
+            incomplete.append((deal, gaps, None))   # vira pendencia de qualquer jeito
+        if not blocking_gaps(deal):
+            append_ok.append(deal)                  # mas so a lacuna bloqueante impede a linha
 
     print(f"Controle de Vendas | ciclo={cycle} | fonte={source_ts} | MATCH won={len(all_deals)}")
+    if args.so_append and changes:
+        # A reconciliacao de linha existente e por CONTEUDO (cliente + projeto + numero + valor +
+        # data), porque nenhuma das 41 linhas tem `deal_id` gravado. Depois que a aba foi ordenada
+        # alfabeticamente em 24/08, ela passou a casar errado: medido em 25/08, um update trocaria
+        # o cliente da linha 8 de "Casa do Alemao" para "Dominos", e F5/G5 trocariam de lugar
+        # entre si. Linha nova nao depende de reconciliacao, entao segue segura.
+        print(f"[--so-append] {len(changes)} update(s) em linha existente DESCARTADO(S): "
+              f"a reconciliacao por conteudo nao esta confiavel desde a reordenacao da aba.")
+        changes = []
     print(f"existentes={len(state['records'])} matches={len(matches)} ambiguos={len(ambiguous)} updates={len(changes)} append={len(append_ok)} incompletos={len(incomplete)}")
     for item in ambiguous:
         print(f"[AMBIGUO] linha {item['row']['row_number']}: {[d['deal_id'] for d in item['candidates']]}")
