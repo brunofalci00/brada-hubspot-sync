@@ -74,9 +74,12 @@ def main():
             {"insertDimension": {"range": {
                 "sheetId": ws.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 2},
                 "inheritFromBefore": False}},
+            # As DUAS ficam ocultas. O link era visivel no primeiro desenho, mas a planilha e
+            # instrumento de trabalho do financeiro e coluna nova atrapalha quem esta digitando;
+            # o Bruno pediu em 25/08 para esconder as duas. O dado continua la para a automacao.
             {"updateDimensionProperties": {
                 "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                          "startIndex": 0, "endIndex": 1},
+                          "startIndex": 0, "endIndex": 2},
                 "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}},
         ]})
         ws.update(values=[[CAB_ID, CAB_LINK]], range_name=f"A{linha_cab}:B{linha_cab}",
