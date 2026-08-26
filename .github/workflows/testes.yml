@@ -1,0 +1,34 @@
+name: Testes
+
+# Existe porque o repo nao tinha nenhum rodando por pytest. O retry do Sheets tem ramos
+# sutis (transitorio contra permanente, teto de tentativas, backoff) e teste que nunca
+# roda nao guarda nada.
+#
+# Coleta so `test_*.py`; os `ops/_test_*.py` sao scripts de mao contra dado real e ficam
+# de fora de proposito (o prefixo `_test_` nao casa com o padrao do pytest).
+#
+# Nao toca em rede, HubSpot nem planilha: tudo com fake e injecao de `dormir`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Rodar os testes
+        run: python -m pytest -q
