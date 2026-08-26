@@ -2465,6 +2465,59 @@ def patch_company_localizacao_via_cnpj(companies_list):
 # GOOGLE SHEETS
 # ===================================================
 
+# ---------------------------------------------------------------- Sheets: retry
+
+# O Google devolve 5xx e 429 de vez em quando e a rodada inteira morria por causa disso.
+# Em 26/08 as 06:51 o `Sync HubSpot -> Sheets` caiu com
+# `APIError: [503]: The service is currently unavailable`; o mesmo 503 derrubou 6 de 60
+# rodadas do mutirao no brada-plataforma-sync, no mesmo dia. Nenhuma era erro nosso.
+#
+# 4xx de permissao NAO entra na lista, de proposito. Retentar credencial errada ou
+# planilha sem acesso so atrasa em 35 segundos a descoberta de um problema que nao passa
+# sozinho — e esse tem que aparecer na primeira tentativa.
+STATUS_TRANSITORIOS = frozenset({429, 500, 502, 503, 504})
+
+
+def _e_transitorio(erro):
+    """O erro passa sozinho se a gente esperar?
+
+    Erro sem `.response` (TypeError, KeyError, bug nosso) responde NAO: retentar quatro
+    vezes so esconderia o defeito atras de meio minuto de espera.
+    """
+    resposta = getattr(erro, "response", None)
+    return getattr(resposta, "status_code", None) in STATUS_TRANSITORIOS
+
+
+def com_retry(request, tentativas=4, espera_inicial=5, dormir=time.sleep):
+    """Envolve `HTTPClient.request` retentando so o que e transitorio.
+
+    Envolve o CLIENTE, e nao cada chamada: ha chamadas ao Sheets em 14 arquivos deste
+    repo, e proteger uma a uma e garantia de esquecer alguma.
+
+    `dormir` e injetavel porque teste de backoff nao pode levar 35 segundos de verdade.
+    """
+    def _wrapper(*args, **kwargs):
+        espera = espera_inicial
+        for tentativa in range(1, tentativas + 1):
+            try:
+                return request(*args, **kwargs)
+            except Exception as erro:
+                if tentativa == tentativas or not _e_transitorio(erro):
+                    raise
+                codigo = getattr(getattr(erro, "response", None), "status_code", "?")
+                print(f"  [sheets] {codigo} na tentativa {tentativa}/{tentativas}; "
+                      f"aguardando {espera}s", flush=True)
+                dormir(espera)
+                espera *= 2
+    return _wrapper
+
+
+def envolver_cliente(gc):
+    """Instala o retry no cliente gspread. Ponto unico de entrada do Sheets."""
+    gc.http_client.request = com_retry(gc.http_client.request)
+    return gc
+
+
 def get_sheets_client():
     """Cliente gspread autenticado via service account."""
     scopes = [
@@ -2483,7 +2536,9 @@ def get_sheets_client():
             "Defina GOOGLE_SERVICE_ACCOUNT_JSON ou GOOGLE_SERVICE_ACCOUNT_FILE."
         )
 
-    return gspread.authorize(creds)
+    # Cobre sync.py e os tres scripts que importam get_sheets_client
+    # (abas_mensais_ivan, comissoes_ivan, reporting_financeiro_mensal).
+    return envolver_cliente(gspread.authorize(creds))
 
 
 def write_to_sheets(rows, header, worksheet_name=WORKSHEET_NAME,

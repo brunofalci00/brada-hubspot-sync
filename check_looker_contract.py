@@ -105,7 +105,10 @@ def get_client():
         print("ERRO: credenciais Google ausentes "
               "(GOOGLE_SERVICE_ACCOUNT_JSON ou GOOGLE_SERVICE_ACCOUNT_FILE).")
         sys.exit(2)
-    return gspread.authorize(creds)
+    # Cliente proprio, entao precisa envolver aqui tambem: nao passa pelo
+    # get_sheets_client() do sync.py.
+    from sync import envolver_cliente
+    return envolver_cliente(gspread.authorize(creds))
 
 
 def check_contract(gc, c):
