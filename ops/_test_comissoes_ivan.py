@@ -1,84 +1,346 @@
 # -*- coding: utf-8 -*-
-"""Testes da logica pura de sheets_comissoes_ivan (sem rede).
-Trava o que vira folha: dedup (classify), montagem de linha (build_row),
-recorte de ciclo (select_cycle) e completude. A escrita real (read_cv/append/
-ocultar coluna) e validada por teste de integracao em sandbox (fora do repo)."""
+"""Testes puros das automacoes Controle de Vendas + BIA."""
+import datetime as dt
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import sheets_comissoes_ivan as m
+
+import financeiro_match_common as common
+import sheets_comissoes_ivan as vendas
+import sheets_cobrancas_bia as bia
+import sheets_reporting_financeiro_mensal as reporting
 
 
-def mk(deal_id, cliente="X", valor="1000", lei="Rouanet", num="123", ie="Interno",
-       closedate="2026-06-10T00:00:00Z", cnpj="111", proj="P", prop="Prop"):
-    return {"deal_id": deal_id, "cliente": cliente, "valor_bruto": valor, "lei_principal": lei,
-            "numero_projeto": num, "interno_externo": ie, "nome_projeto": proj, "proponente": prop,
-            "closedate": closedate, "cnpj": cnpj}
+def deal(deal_id="D1", **overrides):
+    base = {
+        "deal_id": deal_id, "cliente": "Empresa", "cnpj": "1", "pipeline": "Incentivador",
+        "produto": "Match", "stage": "Ganho - Incentivador", "won_ganho": "1",
+        "lei_principal": "Rouanet", "numero_projeto": "2400704", "nome_projeto": "Projeto",
+        "proponente": "Proponente", "valor_bruto": "1500,50", "closedate": "2026-08-10T00:00:00Z",
+        "tipo_de_proponente": "Externo", "nome_contato_proponente": "Contato",
+        "email_proponente": "c@x.com", "telefone_proponente": "119",
+        "numero_contrato_financeiro": "CT-1", "documento_cobranca": "nota_fiscal",
+        "condicoes_pagamento_financeiro": "30/60", "numero_parcelas_financeiro": "2",
+    }
+    base.update(overrides)
+    return base
 
 
-def test_classify_deal_id_e_valor():
-    cv = {"seen_deal_ids": {"D1"}, "legacy": [{"val": 2000.0, "num": "999", "cli": "y"}]}
-    cands = [mk("D1", valor="500"), mk("D2", valor="2000", num="999"), mk("D3", valor="333")]
-    ja, dup, novos = m.classify(cands, cv)
-    assert [r["deal_id"] for r in ja] == ["D1"], "deal_id ja presente -> ja_presente"
-    assert [r["deal_id"] for r in dup] == ["D2"], "valor ja na CV -> provavel_dup"
-    assert dup[0]["_dup_num_match"] is True, "numero do projeto bate -> sinaliza"
-    assert [r["deal_id"] for r in novos] == ["D3"], "valor inedito -> novo"
+def record(row, values, deal_id=""):
+    return {"row_number": row, "cells": values, "deal_id": deal_id}
 
 
-def test_classify_dup_sem_num_match():
-    cv = {"seen_deal_ids": set(), "legacy": [{"val": 700.0, "num": "111", "cli": "a"}]}
-    dup = m.classify([mk("Z", valor="700", num="888")], cv)[1]
-    assert dup and dup[0]["_dup_num_match"] is False, "valor bate, numero nao -> dup com flag False"
+def test_contrato_consolidado_aceita_os_dois_formatos():
+    """Producao tem 37 colunas; com o deploy do sync.py novo passa a ter 41.
+    Os dois valem. Qualquer outra coisa tem que abortar."""
+    obrig = reporting.CONSOLIDADO_HEADER
+    fin = reporting.CONSOLIDADO_HEADER_FINANCEIRO
+    assert fin == list(common.FINANCE_FIELDS)
+    assert not set(obrig) & set(fin), "financeiras nao podem estar no bloco obrigatorio"
+    assert reporting.validar_header_consolidado(list(obrig)) == []
+    assert reporting.validar_header_consolidado(list(obrig) + fin) == fin
+    for ruim, porque in [
+        (list(obrig)[:-1], "faltando a ultima obrigatoria"),
+        (list(obrig) + fin[:2], "cauda financeira pela metade"),
+        (list(obrig) + ["coluna_nova"], "coluna desconhecida no fim"),
+        (list(reversed(obrig)), "ordem trocada"),
+    ]:
+        try:
+            reporting.validar_header_consolidado(ruim)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("deveria abortar: " + porque)
 
 
-def test_build_row_colunas():
-    r = mk("D9", cliente="Cli", valor="1500,50", lei="Rouanet", num="N1", ie="Externo",
-           closedate="2026-05-03T00:00:00Z", proj="Proj", prop="Pp")
-    row = m.build_row(r)
-    assert len(row) == m.N_CV_COLS + 1
-    assert row[0] == "Cli"          # A Cliente
-    assert row[1] == "IR Cultura"   # B Fonte (map_lei Rouanet)
-    assert row[2] == "Pp"           # C Proponente
-    assert row[4] == "Proj"         # E Projeto
-    assert row[5] == "N1"           # F Numero
-    assert row[8] == 1500.5         # I Valor (numero)
-    assert row[9] == "03/05/2026"   # J Data (dd/mm/aaaa)
-    assert row[11] == "Externo"     # L Interno/Externo
-    assert row[18] == "D9"          # S deal_id (tecnica)
-    for j in [3, 6, 7, 10, 12, 13, 14, 15, 16, 17]:   # D,G,H,K,M-R manuais
-        assert row[j] == "", f"coluna idx {j} deve ficar vazia (manual)"
+def test_lacuna_bloqueante_x_preenchivel():
+    """As 4 properties financeiras estao com zero preenchimento no HubSpot. Se
+    elas travassem a escrita, a aba da Bia ficaria vazia por tempo indeterminado
+    — foi o que segurou o rollout de 06/08. Identidade e valor seguem travando."""
+    sem_financeiras = deal(numero_contrato_financeiro="", documento_cobranca="",
+                           condicoes_pagamento_financeiro="", numero_parcelas_financeiro="")
+    assert common.blocking_gaps(sem_financeiras) == []
+    assert common.completeness_gaps(sem_financeiras), "as lacunas ainda tem que ser reportadas"
+    # CNPJ, lei e contato NAO travam: faltam em muitos deals e nao participam da
+    # reconciliacao. Entram como lacuna reportada, e a celula se preenche no run
+    # seguinte quando alguem digitar no HubSpot.
+    assert common.blocking_gaps(deal(cnpj="")) == []
+    assert "empresa_associada/cnpj" in common.completeness_gaps(deal(cnpj=""))
+    assert common.blocking_gaps(deal(lei_principal="")) == []
+    # As chaves de reconciliacao travam: sem elas o run seguinte duplicaria a linha.
+    assert "valor" in common.blocking_gaps(deal(valor_bruto="0"))
+    assert "closedate" in common.blocking_gaps(deal(closedate=""))
+    assert "numero_do_projeto" in common.blocking_gaps(deal(numero_projeto=""))
+    assert "nome_do_projeto" in common.blocking_gaps(deal(nome_projeto=""))
+    assert "cliente/empresa associada" in common.blocking_gaps(deal(cliente=""))
+    assert common.blocking_gaps(deal()) == []
+    # o conjunto bloqueante e exatamente o das chaves de reconciliacao
+    assert set(common.CAMPOS_BLOQUEANTES) == {
+        "cliente/empresa associada", "numero_do_projeto", "nome_do_projeto",
+        "closedate", "valor"}
 
 
-def test_select_cycle_janela():
-    cands = [mk("A", closedate="2026-06-10T00:00:00Z"),   # dentro 21/05-20/06
-             mk("B", closedate="2026-05-01T00:00:00Z"),   # fora (antes)
-             mk("C", closedate="2026-07-05T00:00:00Z"),   # fora (depois)
-             mk("D", closedate="")]                        # sem data
-    ids = {r["deal_id"] for r in m.select_cycle(cands, "2026-06")}
-    assert ids == {"A"}, f"so o do ciclo entra, veio {ids}"
+def test_scope_and_cycle():
+    rows = [deal("A"), deal("B", produto="CRIAPE"), deal("C", stage="Proponente"), deal("D", won_ganho="0")]
+    assert [d["deal_id"] for d in common.select_match_won(rows)] == ["A"]
+    assert [d["deal_id"] for d in common.select_cycle(rows[:1], "2026-08")] == ["A"]
+    assert common.select_cycle([deal("X", closedate="2026-07-20")], "2026-08") == []
+    assert common.select_cycle([deal("X", closedate="2026-07-21")], "2026-08")
 
 
-def test_select_all_pending():
-    cands = [mk("A", closedate="2026-06-10T00:00:00Z"), mk("D", closedate="")]
-    assert len(m.select_cycle(cands, "2026-06", all_pending=True)) == 2
+def test_completeness_and_installments():
+    assert common.completeness_gaps(deal()) == []
+    gaps = common.completeness_gaps(deal(documento_cobranca="", numero_parcelas_financeiro="1.5"))
+    assert "documento_cobranca" in gaps
+    assert "numero_parcelas_financeiro(inteiro>=1)" in gaps
+    assert common.integer_at_least_one("1") == 1
+    assert common.integer_at_least_one("0") is None
+    assert "empresa_associada/cnpj" in common.completeness_gaps(deal(cnpj=""))
+    assert common.sheet_date(46188) == "2026-06-15"
+    assert common.text_id(123.0) == "123"
 
 
-def test_completude():
-    assert m.completude_gaps(mk("X")) == []
-    assert "lei_principal" in m.completude_gaps(mk("X", lei=""))
-    assert "lei_principal" in m.completude_gaps(mk("X", lei="(sem lei preenchida)"))
-    assert "valor" in m.completude_gaps(mk("X", valor="0"))
-    assert any("cnpj" in f for f in m.completude_gaps(mk("X", cnpj="")))
-    assert "closedate" in m.completude_gaps(mk("X", closedate=""))
+def test_reconcile_order_and_ambiguity():
+    deals = [deal("D1", numero_projeto="111", valor_bruto="100"), deal("D2", numero_projeto="222", valor_bruto="200")]
+    cells = [""] * 32
+    cells[7], cells[10] = "222", 200
+    matches, ambiguous, unmatched = common.reconcile([record(2, cells)], deals, vendas.SCHEMA)
+    assert matches[0]["deal"]["deal_id"] == "D2" and matches[0]["level"] == 2
+    assert not ambiguous and [d["deal_id"] for d in unmatched] == ["D1"]
+
+    twins = [deal("A", numero_projeto="333", valor_bruto="50"), deal("B", numero_projeto="333", valor_bruto="50")]
+    cells[7], cells[10] = "333", 50
+    matches, ambiguous, _ = common.reconcile([record(3, cells)], twins, vendas.SCHEMA)
+    assert not matches and ambiguous
+
+
+def test_null_never_erases():
+    old, new = ["mantem"], [""]
+    assert common.changed_cells(old, new, [0]) == []
+    assert common.changed_cells(old, ["novo"], [0]) == [(0, "mantem", "novo")]
+
+
+def test_only_fill_blanks_preserva_o_que_foi_digitado():
+    """Aba mantida a mao: automacao preenche vazio, nunca corrige o humano.
+    Caso real da aba da Bia em 19/08 — o nome que ela digitou era mais
+    especifico que o nome do projeto no HubSpot."""
+    planilha = ["Craques do Amanhã", "", "(21) 98836-8628"]
+    hubspot = ["FIM DE ANO FELIZ", "CT-9", "+5521988368628"]
+    idx = [0, 1, 2]
+    assert common.changed_cells(planilha, hubspot, idx, only_fill_blanks=True) == [(1, "", "CT-9")]
+    # sem a flag, sobrescreveria os tres
+    assert len(common.changed_cells(planilha, hubspot, idx)) == 3
+    # o que nao foi sobrescrito nao some: vira relatorio
+    div = common.divergent_cells(planilha, hubspot, idx)
+    assert [d[0] for d in div] == [0, 2]
+    # celula vazia de um dos lados nao e divergencia, e lacuna
+    assert common.divergent_cells(["", "x"], ["a", ""], [0, 1]) == []
+
+
+def test_vendas_layout_formula_and_manuals():
+    row = vendas.build_row(deal(), row_number=43)
+    assert len(row) == 32 and row[0] == "Empresa" and row[10] == 1500.5
+    assert row[14] == "30/60" and row[15] == "Externo" and row[31] == "D1"
+    assert row[16].startswith('=IF(P43="Externo";') and row[19].endswith(';R43*4%;0)')
+    for idx in [8, 9, 12, 13, 20, 21, 22, 23, 24, 25]:
+        assert row[idx] == "", f"manual idx {idx} alterado"
+
+
+def test_bia_layout_and_manuals():
+    """Layout real de 21 colunas conferido na aba viva em 19/08: o time inseriu
+    CNPJ e Segmento Cultural no inicio, deslocando tudo duas casas."""
+    assert bia.HEADER[:3] == ["Razão Social", "CNPJ", "Segmento Cultural"]
+    assert len(bia.HEADER) == 21
+    row = bia.build_row(deal())
+    assert len(row) == 29
+    assert row[0] == "Empresa" and row[1] == "1"          # A Razao Social, B CNPJ
+    assert row[2] == "Cultura"                            # C derivado da lei Rouanet
+    assert row[4] == "CT-1" and row[5] == "Nota Fiscal"   # E Contrato, F RECIBO/NOTA
+    assert row[6] == "30/60" and row[8] == "Externo"      # G CONDICOES, I Interno/Externo
+    assert row[11] == 1500.5 and row[13] == 2            # L Valor, N PARCELAS
+    assert row[16] == "Contato" and row[18] == "c@x.com"  # Q contato, S e-mail
+    assert row[28] == "D1"                                # AC deal_id
+    for idx in bia.MANUAIS_DA_BIA:
+        assert row[idx] == "", f"coluna da Bia (idx {idx}) foi sobrescrita"
+
+
+def test_sufixo_de_deal_e_estreito():
+    """So o nome que o HubSpot da a deal sem nome; abreviacao humana nao entra."""
+    # o caso real de 20/08: boilerplate do CRM vazado pra coluna de proponente
+    assert common.tem_sufixo_de_deal(" Instituto Serra dos Órgãos - Novo(a) Deal")
+    assert common.tem_sufixo_de_deal("GameJamPlus - Novo(a) Deal")
+    assert common.tem_sufixo_de_deal("Acme - New Deal")
+    # abreviacao deliberada do Ivan: NAO e sufixo, e tem que continuar de fora
+    assert not common.tem_sufixo_de_deal("EGP BRASIL")
+    assert not common.tem_sufixo_de_deal("Encaminhando")
+    assert not common.tem_sufixo_de_deal("Escola de Dança Missao Intensidade")
+    # a palavra "deal" no meio nao basta: o criterio e o sufixo inteiro
+    assert not common.tem_sufixo_de_deal("Deal Comercio de Alimentos")
+    assert not common.tem_sufixo_de_deal("")
+    assert not common.tem_sufixo_de_deal(None)
+
+
+def test_sufixo_de_deal_e_mesma_entidade_sao_ortogonais():
+    """A mesma celula e 'mesma entidade' E 'suja': por isso precisa de dois testes."""
+    sujo, limpo = " Instituto Serra dos Órgãos - Novo(a) Deal", "Instituto Serra dos Órgãos"
+    assert common.mesma_entidade(sujo, limpo)      # por isso o corretor de entidade PULA
+    assert common.tem_sufixo_de_deal(sujo)         # e por isso precisa da flag propria
+
+
+def test_forca_do_nome_separa_pista_de_prova():
+    """Casos reais medidos em 19/08 ao montar o matcher de link do HubSpot."""
+    # o falso positivo classico: nome de UM token dentro de um nome maior
+    assert common.forca_do_nome("Total", "Futebol Total Feminino") == "fraco"
+    assert common.forca_do_nome("Brasil", "Movimento de IA Brasil") == "fraco"
+    # legitimo, e tambem de um token so: por isso "fraco" e nao "nenhum"
+    assert common.forca_do_nome("GameJamPlus", "GameJamPlus - Novo(a) Deal") == "fraco"
+    # dois ou mais tokens de conteudo: da para confiar
+    assert common.forca_do_nome("Carioca Matsuri", "Carioca Matsuri ICMS") == "forte"
+    assert common.forca_do_nome("Missao Intensidade", "Escola de Dança Missao Intensidade") == "forte"
+    assert common.forca_do_nome("Acelera Indie Plus LTDA", "ACELERA INDIE PLUS TREINAMENTOS LTDA") == "forte"
+    assert common.forca_do_nome("Pianópolis", "Pianópolis") == "exato"
+    # entidades diferentes nao casam de jeito nenhum
+    assert common.forca_do_nome("JMK Sports", "ZENEG") == ""
+    assert common.forca_do_nome("", "ZENEG") == ""
+    # e a versao booleana concorda
+    assert common.nome_compativel("Carioca Matsuri", "Carioca Matsuri ICMS")
+    assert not common.nome_compativel("JMK Sports", "ZENEG")
+
+
+def test_deal_link_usa_o_formato_atual():
+    """Um so formato de URL no projeto. O legado `/deal/{id}` convivia com o
+    `/record/0-3/{id}` da tabela do Ricardo, e planilha com dois formatos faz
+    alguem achar que um deles quebrou."""
+    url = common.deal_link({"deal_id": "123"})
+    assert url == f"https://app.hubspot.com/contacts/{common.PORTAL_ID}/record/0-3/123"
+    assert "/deal/" not in url
+
+
+def test_termo_de_busca_usa_so_o_primeiro_nome():
+    """A coluna CLIENTE mistura cliente com linha de imposto, com data e com
+    outros clientes. Buscar a string inteira devolve zero resultado, e busca que
+    nao acha nada e quase tao inutil quanto celula vazia."""
+    assert common.termo_de_busca("MedWrites Editora / RMed Cursos Médicos / Asia") == "MedWrites Editora"
+    assert common.termo_de_busca("Real Pax / ISS") == "Real Pax"
+    assert common.termo_de_busca("MARSH" + chr(13) + chr(10) + "JC RISCOS " + chr(13) + chr(10) + "BOMDINHO") == "MARSH"
+    # nome simples passa inteiro
+    assert common.termo_de_busca("Nu Bank") == "Nu Bank"
+    assert common.termo_de_busca("Fórum Celint") == "Fórum Celint"
+    # primeiro pedaco curto demais nao serve de busca: devolve a celula inteira
+    assert common.termo_de_busca("A / Fundacao Grande") == "A / Fundacao Grande"
+    # o link sai marcado como busca, para dar para distinguir de link de negocio
+    url = common.link_busca("Nu Bank")
+    assert common.MARCA_BUSCA in url and "Nu%20Bank" in url
+    assert common.MARCA_BUSCA not in common.deal_link({"deal_id": "1"})
+
+
+def test_linha_e_dado_descarta_somatorio():
+    """A linha de Total das abas de Elaboracao casava com um negocio no
+    prototipo. Descartar antes de comparar sai mais barato que desfazer."""
+    for lixo in ["Total", "TOTAL", "  total  ", "Subtotal", "Totais", "", None]:
+        assert not common.linha_e_dado(lixo), f"deveria descartar: {lixo!r}"
+    for real in ["Craques do Amanhã", "Pianópolis", "ZENEG"]:
+        assert common.linha_e_dado(real)
+
+
+def test_segmento_cobre_as_12_leis_do_enum():
+    """O enum de `lei_principal` tem 12 valores, nao 2. Um mapa binario
+    Cultura/Esporte rotularia 6 deles errado."""
+    enum = ["Rouanet", "Esporte Federal", "Esporte Estadual", "Lei do Bem", "FIA",
+            "Idoso", "Cultura Estadual", "Cultura Municipal", "Reciclagem",
+            "PRONAS", "PRONON", "Audiovisual"]
+    for lei in enum:
+        assert common.segmento_da_lei(lei), f"lei sem segmento no mapa: {lei}"
+    assert common.segmento_da_lei("Rouanet") == "Cultura"
+    assert common.segmento_da_lei("Audiovisual") == "Cultura"
+    assert common.segmento_da_lei("Esporte Estadual") == "Esporte"
+    assert common.segmento_da_lei("PRONAS") == "Saúde"
+    assert common.segmento_da_lei("FIA") == "Social"
+    assert common.segmento_da_lei("Lei do Bem") == "Inovação"
+    assert common.segmento_da_lei("Reciclagem") == "Ambiental"
+    # acento e caixa nao importam
+    assert common.segmento_da_lei("ESPORTE FEDERAL") == "Esporte"
+    # lei desconhecida ou vazia deixa a celula vazia, nunca um palpite
+    assert common.segmento_da_lei("Lei Nova de 2027") == ""
+    assert common.segmento_da_lei("") == ""
+    assert common.segmento_da_lei(None) == ""
+
+
+def test_mesma_entidade_nao_corrige_nome_abreviado():
+    """Casos reais medidos em 19/08 nas abas de Elaboracao."""
+    # mesmo proponente, escrito mais curto pelo Ivan: NAO sobrescrever
+    assert common.mesma_entidade("EGP BRASIL", "ESCRITORIO DE GERENCIAMENTO DE PROJETOS DO BRASIL - EGP")
+    assert common.mesma_entidade("Encaminhando", "Associação Encaminhando")
+    assert common.mesma_entidade("PLUG AND PLUS", "PLUG AND PLUS EDUCACAO LTDA")
+    assert common.mesma_entidade("STARTUP GRID", "STARTUP GRID COWORKING E ACELERACAO LTDA")
+    # palavra inserida no meio: substring falha, token nao
+    assert common.mesma_entidade("Acelera Indie Plus LTDA", "ACELERA INDIE PLUS TREINAMENTOS LTDA")
+    # o mais longo esta na planilha e o curto no cadastro: sobrescrever perderia dado
+    assert common.mesma_entidade("Escola de Dança Missao Intensidade", "Missao Intensidade")
+    assert common.mesma_entidade("Instituto Serra dos Órgãos - Novo(a) Deal", " Instituto Serra dos Órgãos")
+    # nome de PROJETO no lugar do proponente: entidades diferentes, corrigir
+    assert not common.mesma_entidade("Gaúchos GAMES", "Epopeia Desenvolvedora de Jogos Eletronicos")
+    assert not common.mesma_entidade("Caminhos do Tenis", "Associação Encaminhando")
+    assert not common.mesma_entidade("Carioca Matsuri ICMS", "CEMAFER PRODUÇÕES LTDA")
+    assert not common.mesma_entidade("Florescer Financeiro", "ZENEG")
+    assert not common.mesma_entidade("Olimpiadas Conexão (Conectados do Bem)",
+                                     "ACELERA INDIE PLUS TREINAMENTOS LTDA")
+    # vazio nunca casa
+    assert not common.mesma_entidade("", "ZENEG")
+    assert not common.mesma_entidade("ZENEG", "")
+
+
+def test_reparo_de_identificador_virado_numero():
+    """CNPJ, contrato e numero de projeto sao identificadores. Guardados como
+    numero pelo Sheets, perdem o zero a esquerda — aconteceu de verdade na carga
+    de 19/08 com 08316498000108 e 01137526000180."""
+    planilha = [8316498000108, "X", 26989067000194]
+    hubspot = ["08316498000108", "Y", "26989067000194"]
+    rep = common.numeric_render_repairs(planilha, hubspot, [0, 2])
+    assert rep == [(0, 8316498000108, "08316498000108")]
+    # conteudo realmente diferente NAO e reparo, e divergencia
+    assert common.numeric_render_repairs([123], ["456"], [0]) == []
+    # celula vazia de um lado nao e reparo, e lacuna
+    assert common.numeric_render_repairs(["", 1], ["1", ""], [0, 1]) == []
+    # numero sem perda de zero nao precisa de reparo, mesmo com espaco sobrando
+    # no valor do HubSpot (varios numeros de projeto vem assim)
+    assert common.numeric_render_repairs([2317455], ["2317455    "], [0]) == []
+    # celula que ja e texto nunca e reparada
+    assert common.numeric_render_repairs(["08316498000108"], ["8316498000108"], [0]) == []
+
+
+def test_freshness():
+    now = dt.datetime(2026, 8, 6, 18, 0, tzinfo=dt.timezone.utc)
+    # marca explicita de fuso manda
+    assert 59 < common.assert_fresh_source("2026-08-06 14:00:00 BRT", now=now) < 61
+    # 'DD/MM/YYYY HH:MM' e o que o sync.py grava, com a hora do runner (UTC)
+    assert 59 < common.assert_fresh_source("06/08/2026 17:00 831", now=now) < 61
+    # o mesmo carimbo lido como BRT daria 60 min e passaria; como UTC da 240 e aborta
+    try:
+        common.assert_fresh_source("06/08/2026 14:00 831", now=now)
+    except SystemExit as exc:
+        assert "stale" in str(exc)
+    else:
+        raise AssertionError("240 min deveria abortar (era o bug de 3h)")
+    try:
+        common.assert_fresh_source("2026-08-06 12:00:00 BRT", now=now)
+    except SystemExit as exc:
+        assert "stale" in str(exc)
+    else:
+        raise AssertionError("fonte stale deveria abortar")
+    # carimbo no futuro nao e "stale": e fuso ou relogio errado, e tem mensagem propria
+    try:
+        common.assert_fresh_source("06/08/2026 21:00 831", now=now)
+    except SystemExit as exc:
+        assert "FUTURO" in str(exc)
+    else:
+        raise AssertionError("carimbo no futuro deveria abortar")
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")]
-    for n, f in tests:
-        f()
-        print("PASS", n)
+    tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_")]
+    for name, fn in tests:
+        fn()
+        print("PASS", name)
     print(f"OK — {len(tests)} testes")

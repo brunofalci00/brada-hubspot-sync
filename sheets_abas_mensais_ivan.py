@@ -35,6 +35,8 @@ from sheets_reporting_financeiro_mensal import (
     load_consolidado, split_vendas, current_cycle, cycle_window, MIN_ROWS_GUARD,
 )
 from sheets_comissoes_ivan import select_cycle, _norm, _digits, utf8_stdout
+from financeiro_match_common import deal_link
+from financeiro_match_common import assert_fresh_source
 
 OFICIAL_ID_DEFAULT = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"
 
@@ -95,7 +97,9 @@ def ensure_month_tab(sh, template_name, new_name, extra_headers, n_template_cols
         c0 = rowcol_to_a1(1, n_template_cols + 1)
         c1 = rowcol_to_a1(1, n_template_cols + len(extra_headers))
         ws.update(values=[extra_headers], range_name=f"{c0}:{c1}", value_input_option="USER_ENTERED")
-        hide_columns(sh, ws, n_template_cols, len(extra_headers))
+        # so a primeira extra e tecnica. Ocultar todas esconderia o link, que existe
+        # justamente para ser clicado.
+        hide_columns(sh, ws, n_template_cols, 1)
     return ws, True
 
 
@@ -125,13 +129,37 @@ def read_existing(sh, tab, n_cols, tech_idx):
     return True, last_row, ids, is_auto
 
 
+def criar_aba_vazia(sh, template, tab, extras, n_cols, frente):
+    """Cria a aba do mes so com cabecalho, quando o ciclo fechou sem nenhum deal.
+
+    Por padrao a automacao nao cria aba vazia: no cron isso mascararia um ciclo
+    que nao rodou. Mas quando o fecho e conferido e o zero e real, a aba precisa
+    existir — a ausencia dela na planilha se le como esquecimento, nao como
+    "nao houve venda". Nasce ja no formato da automacao (com a coluna tecnica
+    deal_id oculta), entao se algum card virar Ganho depois o run seguinte
+    preenche sozinho.
+    """
+    ws, criada = ensure_month_tab(sh, template, tab, extras, n_cols)
+    if criada:
+        print(f"[write] {frente} {tab}: aba CRIADA vazia (ciclo sem movimento). "
+              "So cabecalho + deal_id oculto; o proximo run preenche se aparecer deal.")
+    else:
+        print(f"[write] {frente} {tab}: ja existia, nada a fazer.")
+    return ws, criada
+
+
 # ===================================================
 # FRENTE B — {Mes}_MATCH
 # ===================================================
 
 MATCH_TEMPLATE = "Junho_MATCH"
 N_MATCH_TEMPLATE = 16                 # A-P: A-H auto + I-K contato + L-P comissoes (todas no template)
-MATCH_EXTRA = ["deal_id"]             # unica coluna tecnica appendada e OCULTA (Q)
+# Link do negocio no HubSpot, ultima coluna. O financeiro abre daqui para ver
+# recibo e anexo, que nao cabem na planilha. Sem isto a planilha e um beco sem
+# saida: da o numero, nao da o caminho de volta para a origem.
+HEADER_LINK = "Link HubSpot"
+MATCH_EXTRA = ["deal_id", HEADER_LINK]   # Q tecnica OCULTA, R link VISIVEL
+MATCH_LINK_IDX = 17                      # R
 MATCH_TECH_IDX = 16                   # Q (deal_id)
 # indices 0-based das colunas AUTO no MATCH (contato agora VISIVEL em I/J/K, pedido Ivan 10/07)
 MCOL = {"cliente": 0, "fonte": 1, "proponente": 2, "interno": 3, "projeto": 4,
@@ -142,7 +170,7 @@ MCOL = {"cliente": 0, "fonte": 1, "proponente": 2, "interno": 3, "projeto": 4,
 def build_match_row(r):
     """Linha A-Q do {Mes}_MATCH. A-H auto; I-K contato (visivel); L-P (comissoes)
     em branco; Q deal_id (oculto)."""
-    out = [""] * (MATCH_TECH_IDX + 1)  # A..Q
+    out = [""] * (MATCH_LINK_IDX + 1)  # A..R
     out[MCOL["cliente"]] = r["cliente"]
     out[MCOL["fonte"]] = map_lei(r["lei_principal"])
     out[MCOL["proponente"]] = r["proponente"]
@@ -157,10 +185,11 @@ def build_match_row(r):
     out[MCOL["contato_tel"]] = r.get("telefone_proponente", "")
     out[MCOL["contato_email"]] = r.get("email_proponente", "")
     out[MATCH_TECH_IDX] = str(r["deal_id"]).strip()
+    out[MATCH_LINK_IDX] = deal_link(r)
     return out
 
 
-def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
+def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False, aba_vazia=False):
     mes = cycle_to_mes(cycle)
     tab = tab or f"{mes}_MATCH"
     cands = select_cycle(inc, cycle)
@@ -189,7 +218,10 @@ def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
         print(f"[write] {tab}: BLOQUEADO (aba manual/fechada, ex. Junho). Nada gravado.")
         return
     if not novos:
-        print(f"[write] {tab}: 0 novos — nada a gravar.")
+        if aba_vazia:
+            criar_aba_vazia(sh, MATCH_TEMPLATE, tab, MATCH_EXTRA, N_MATCH_TEMPLATE, "FRENTE B")
+        else:
+            print(f"[write] {tab}: 0 novos — nada a gravar.")
         return
     ws, criada = ensure_month_tab(sh, MATCH_TEMPLATE, tab, MATCH_EXTRA, N_MATCH_TEMPLATE)
     if criada:
@@ -197,7 +229,7 @@ def run_match_mes(sh, cycle, inc, write, tab=None, hidden=False):
     rows_out = [build_match_row(r) for r in novos]
     start = last_row + 1
     end = start + len(rows_out) - 1
-    rng = f"A{start}:{rowcol_to_a1(1, MATCH_TECH_IDX + 1).rstrip('1')}{end}"
+    rng = f"A{start}:{rowcol_to_a1(1, MATCH_LINK_IDX + 1).rstrip('1')}{end}"
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
           f"({'aba criada' if criada else 'append'}). Comissoes L-P em branco; contato I-K visivel; deal_id oculto.")
@@ -218,7 +250,9 @@ PIPELINE_PROPONENTE = "839644419"
 STAGES_GANHO_PROP = ["1246571362", "1246571363", "1253441207"]  # Fechado/Ganho + 2 pos-venda
 PRODUTOS_ELABORACAO = ["Elaboração", "Prestação de Contas", "Customização"]  # Bruno 02/07
 ELAB_PROPS = ["dealname", "nome_do_proponente", "closedate", "produto", "condicao_de_pagamento",
-              "valor_do_aporte", "valor_vendido", "lei_principal", "numero_do_projeto"]
+              "valor_do_aporte", "valor_vendido", "lei_principal", "numero_do_projeto",
+              # o proponente de verdade e a EMPRESA associada, nao nome_do_proponente
+              "hs_primary_associated_company"]
 
 
 def load_hubspot_token():
@@ -266,14 +300,59 @@ def _produto_cru(v):
     return str(v or "").strip()
 
 
+CHAVE_EMPRESA = "_empresa_associada"   # preenchida por resolver_proponentes
+
+
+def resolver_proponentes(deals, token):
+    """Anota em cada deal o nome da EMPRESA associada, que e o proponente de verdade.
+
+    `nome_do_proponente` NAO serve: foi backfillada do `dealname` em 22/06 e o que ficou la e o
+    nome do PROJETO. Nos deals antigos o dealname por acaso era o proponente, entao a maioria
+    das linhas parecia certa; nos deals criados depois do backfill, nao. Medido em 19/08 na
+    tabela do Ricardo: 23 de 34 batiam e 5 traziam o projeto, e os 5 eram justamente os mais
+    recentes ("Gauchos GAMES" no lugar de Epopeia, "Caminhos do Tenis" no lugar de Associacao
+    Encaminhando).
+
+    Fallback para `nome_do_proponente` quando o card nao tem empresa vinculada (6 dos 34 hoje):
+    nesses o nome do projeto e o unico dado que existe, e e o que o Ivan ja digita a mao.
+
+    Prova de regressao em [[feedback_nome_do_proponente_e_o_projeto]]: contra a aba que o Ivan
+    preenche a mao, 11 de 11 linhas e 8 de 8 nomes.
+    """
+    ids = {(d["properties"].get("hs_primary_associated_company") or "").strip() for d in deals}
+    ids.discard("")
+    nomes = {}
+    if ids:
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        alvo = sorted(ids)
+        for i in range(0, len(alvo), 100):
+            payload = {"properties": ["name"], "inputs": [{"id": c} for c in alvo[i:i + 100]]}
+            resp = requests.post(f"{BASE}/crm/v3/objects/companies/batch/read",
+                                 headers=headers, json=payload, timeout=30)
+            if resp.status_code not in (200, 207):
+                raise SystemExit(f"[abort] HubSpot companies batch/read {resp.status_code}: {resp.text[:300]}")
+            for item in resp.json().get("results", []):
+                nomes[str(item["id"])] = (item["properties"].get("name") or "").strip()
+    com_empresa = 0
+    for d in deals:
+        cid = (d["properties"].get("hs_primary_associated_company") or "").strip()
+        nome = nomes.get(cid, "")
+        d["properties"][CHAVE_EMPRESA] = nome
+        if nome:
+            com_empresa += 1
+    return com_empresa
+
+
 def _proponente(p):
-    return (p.get("nome_do_proponente") or p.get("dealname") or "").strip()
+    """Nome do proponente: empresa associada, com fallback. Ver resolver_proponentes."""
+    return (p.get(CHAVE_EMPRESA) or p.get("nome_do_proponente") or p.get("dealname") or "").strip()
 
 
 # ---- Frente C: {Mes}_Elaboracao de Projetos ----
 ELAB_TEMPLATE = "Junho_Elaboração de Projetos"
 N_ELAB_TEMPLATE = 12           # A-L
-ELAB_EXTRA = ["deal_id"]
+ELAB_EXTRA = ["deal_id", HEADER_LINK]    # M tecnica OCULTA, N link VISIVEL
+ELAB_LINK_IDX = 13                       # N
 ELAB_TECH_IDX = 12             # M
 
 
@@ -291,7 +370,7 @@ def build_elaboracao_row(d):
     ficam VAZIAS — nao ha pagamento ate a captacao acontecer (Bruno 14/07, refina a
     convencao de 02/07 que copiava sempre)."""
     p = d["properties"]
-    out = [""] * (ELAB_TECH_IDX + 1)  # A-M
+    out = [""] * (ELAB_LINK_IDX + 1)  # A-N
     out[0] = _proponente(p)
     cd = parse_closedate(p.get("closedate"))
     out[1] = fmt_date_br(cd) if cd else ""
@@ -306,6 +385,7 @@ def build_elaboracao_row(d):
         out[7] = out[4]   # H Valor pago = E Valor
     # captado: G/H vazios (pagamento so na captacao)
     out[ELAB_TECH_IDX] = d["id"]
+    out[ELAB_LINK_IDX] = deal_link({"deal_id": d["id"]})
     return out
 
 
@@ -319,7 +399,7 @@ def _deals_no_ciclo(deals, cycle):
     return out
 
 
-def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False):
+def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False, aba_vazia=False):
     mes = cycle_to_mes(cycle)
     tab = tab or f"{mes}_Elaboração de Projetos"
     cands = _deals_no_ciclo(deals, cycle)
@@ -347,7 +427,10 @@ def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False):
         print(f"[write] {tab}: BLOQUEADO (aba manual/fechada). Nada gravado.")
         return
     if not novos:
-        print(f"[write] {tab}: 0 novos — nada a gravar.")
+        if aba_vazia:
+            criar_aba_vazia(sh, ELAB_TEMPLATE, tab, ELAB_EXTRA, N_ELAB_TEMPLATE, "FRENTE C")
+        else:
+            print(f"[write] {tab}: 0 novos — nada a gravar.")
         return
     ws, criada = ensure_month_tab(sh, ELAB_TEMPLATE, tab, ELAB_EXTRA, N_ELAB_TEMPLATE)
     if criada:
@@ -355,7 +438,7 @@ def run_elaboracao_mes(sh, cycle, deals, write, tab=None, hidden=False):
     rows_out = [build_elaboracao_row(d) for d in novos]
     start_row = last_row + 1
     end_row = start_row + len(rows_out) - 1
-    rng = f"A{start_row}:{rowcol_to_a1(1, ELAB_TECH_IDX + 1).rstrip('1')}{end_row}"
+    rng = f"A{start_row}:{rowcol_to_a1(1, ELAB_LINK_IDX + 1).rstrip('1')}{end_row}"
     ws.update(values=rows_out, range_name=rng, value_input_option="USER_ENTERED")
     print(f"[write] {tab}: {len(rows_out)} linha(s) em {rng} "
           f"({'aba criada' if criada else 'append'}). I-L manuais em branco; deal_id oculto.")
@@ -496,6 +579,10 @@ def main():
     ap.add_argument("--tab", default=None, help="override do nome da aba (sandbox/teste)")
     ap.add_argument("--rebuild", action="store_true",
                     help="Frente D: limpa os dados da tabela e re-popula do zero (uniformiza)")
+    ap.add_argument("--aba-vazia", action="store_true",
+                    help="cria a aba do mes mesmo sem nenhum deal no ciclo (so cabecalho). "
+                         "Fora daqui o comportamento nao muda: no cron, aba vazia mascararia "
+                         "um ciclo que nao rodou.")
     ap.add_argument("--hidden", action="store_true",
                     help="oculta as abas do mes recem-criadas (validacao antes de publicar dia 20)")
     args = ap.parse_args()
@@ -518,14 +605,21 @@ def main():
             raise SystemExit(f"[abort] consolidado com {len(rows)} linhas (< {MIN_ROWS_GUARD}).")
         inc, _ = split_vendas(rows)
         print(f"consolidado fonte_ts={fonte_ts} | Match Won total={len(inc)}\n")
-        run_match_mes(sh, cycle, inc, args.write, tab=args.tab, hidden=args.hidden)
+        if args.write:
+            assert_fresh_source(fonte_ts)
+        run_match_mes(sh, cycle, inc, args.write, tab=args.tab, hidden=args.hidden,
+                      aba_vazia=args.aba_vazia)
 
     if do_elab or do_ric:
         token = load_hubspot_token()
         deals = search_elaboracao_won(token)
-        print(f"\nHubSpot: {len(deals)} deals Proponente ganho (produtos {PRODUTOS_ELABORACAO})\n")
+        com_empresa = resolver_proponentes(deals, token)
+        print(f"\nHubSpot: {len(deals)} deals Proponente ganho (produtos {PRODUTOS_ELABORACAO})")
+        print(f"  proponente pela empresa associada: {com_empresa} | "
+              f"por fallback (card sem empresa): {len(deals) - com_empresa}\n")
         if do_elab:
-            run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab, hidden=args.hidden)
+            run_elaboracao_mes(sh, cycle, deals, args.write, tab=args.tab, hidden=args.hidden,
+                               aba_vazia=args.aba_vazia)
         if do_ric:
             run_ricardo(gc, deals, args.write, rebuild=args.rebuild)
 

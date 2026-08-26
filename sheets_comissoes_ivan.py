@@ -1,429 +1,237 @@
 # -*- coding: utf-8 -*-
-"""
-Automacao da aba "Controle de Vendas" da planilha OFICIAL de Comissoes do Ivan
-(1XVRuIMN...). Roda no dia 20 (fecho do ciclo) e faz APPEND incremental dos
-Match Won do ciclo corrente que ainda nao estao na planilha.
-
-Principios (folha de pagamento = cirurgico):
-  - SO APPEND. Nunca clear, nunca sobrescreve linha existente.
-  - Preenche apenas A,B,C,E,F,I,J,L (decisao Bruno 28/06). D,G,H,K,M-R ficam
-    em branco (manuais do Ivan/Luciana).
-  - Dry-run default; --write so grava apos gate manual.
-  - Dedup por deal_id (coluna tecnica oculta) + heuristica de valor pras linhas
-    legadas (sem deal_id). O lado seguro e NAO duplicar: candidato com valor ja
-    presente entra como "provavel duplicata" e NAO e gravado sem --force-dup.
-  - Contrato de header (A-R) hard-fail: o Ivan edita a mao; shift de coluna poria
-    numero errado em folha.
-
-Fonte dos dados: aba `consolidado` da Brada_Dashboard_Deals (mesma do reporting
-paralelo), ja enriquecida pelo build_consolidado_layer do sync.py. Sheets-only,
-sem HubSpot.
-
-Uso:
-  python sheets_comissoes_ivan.py                       # dry-run, ciclo corrente
-  python sheets_comissoes_ivan.py --cycle 2026-06       # dry-run, ciclo especifico
-  python sheets_comissoes_ivan.py --cycle 2026-06 --write
-  python sheets_comissoes_ivan.py --all-pending         # dry-run de TODOS os faltantes (catch-up)
-
-Escopo deste modulo: a Controle de Vendas (cumulativa). As ABAS MENSAIS
-({Mes}_MATCH, {Mes}_Elaboracao) e a tabela do Ricardo sao geradas pelo modulo
-irmao sheets_abas_mensais_ivan.py (Bruno 30/06). Junho esta FECHADO (template).
-Criterio do append = ciclo do mes (incremental).
-"""
-
+"""Upsert HubSpot -> aba oficial Controle de Vendas (dry-run por padrao)."""
 import argparse
-import datetime
 import json
+from pathlib import Path
 import re
 import sys
 
-import gspread
+from gspread.utils import rowcol_to_a1
 
-from sync import get_sheets_client, PORTAL_ID  # noqa: F401  (PORTAL_ID p/ link futuro)
+from sync import get_sheets_client
 from sheets_reporting_financeiro_mensal import (
-    parse_brl,
-    parse_closedate,
-    fmt_date_br,
-    map_lei,
-    load_consolidado,
-    split_vendas,
-    current_cycle,
-    cycle_window,
-    MIN_ROWS_GUARD,
+    MIN_ROWS_GUARD, current_cycle, fmt_date_br, load_consolidado, map_lei, parse_closedate,
+)
+from financeiro_match_common import (
+    assert_fresh_source, changed_cells, blocking_gaps, completeness_gaps, deal_link,
+    digits as _digits, interno_externo, money, norm as _norm, reconcile, select_cycle, select_match_won, sheet_date, text_id,
 )
 
-# ===================================================
-# CONFIG
-# ===================================================
+from hubspot_financeiro import enriquecer as enriquecer_financeiras
 
-OFICIAL_ID_DEFAULT = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"  # Comissoes 2026 (Ivan)
+OFICIAL_ID_DEFAULT = "1XVRuIMN9kGto35gL8FPhXIUTgUV8t0CY4IKl8IHhScI"
 CV_WS = "Controle de Vendas"
-
-# Layout exato A-R da aba do Ivan (comparado com strip; o sheet tem headers com
-# espaco no fim, ex.: "Valor "). Hard-fail se divergir.
-CV_HEADER_EXPECTED = [
-    "Cliente", "Fonte de recurso", "Proponente", "Dados para Cobrança", "Projeto",
-    "Numero do projeto", "Nº conta M", "Nº conta C", "Valor", "Data do aporte",
-    "DATA na Conta Movimentação", "Interno ou externo?", "Comissão BRADA",
-    "Líquido Brada", "Comissão Ivan 8%", "Comissão Jaque 4%", "Comissão externo 3%",
-    "Nome do externo",
+HEADER = [
+    "CLIENTE", "Fonte de recurso", "Nome do contato", "Telefone do proponente",
+    "E-mail do proponente", "Proponente", "Projeto", "Numero do projeto",
+    "Nº conta M", "Nº conta C", "Valor", "Data do aporte",
+    "DATA na Conta Movimentação", "Valor que caiu na conta", "CONDIÇÕES",
+    "Interno ou externo?", "Comissão BRADA", "Líquido Brada", "Comissão Ivan 8%",
+    "Comissão Jaque 4%", "Comissão externo 3%", "Comissão externo 3%",
+    "Comissão 10%", "Comissão 15%  Sergio", "Comissão 20% Grant Thorton",
+    "Comissão GT 80% Lei do Bem",
 ]
-N_CV_COLS = len(CV_HEADER_EXPECTED)          # 18 (A-R)
-TECH_COL_HEADER = "deal_id"                  # coluna tecnica oculta, indice 18 (S)
-TECH_COL_IDX = N_CV_COLS                      # 18 -> coluna S
-TECH_COL_A1 = "S"
+TECH_IDX = 31  # AF
+TECH_A1 = "AF"
+TECH_HEADER = "hubspot_deal_id"
+# Link do negocio no HubSpot, ultima coluna. O financeiro abre daqui para ver
+# recibo e anexo, que nao cabem na planilha. Sem isto a planilha e um beco sem
+# saida: da o numero, nao da o caminho de volta para a origem.
+HEADER_LINK = "Link HubSpot"
+LINK_IDX = 26   # AA, primeira livre depois do bloco visivel A:Z
 
-# indices 0-based dentro de A-R das colunas AUTO (Bruno: A,B,C,E,F,I,J,L)
-COL = {
-    "cliente": 0,    # A
-    "fonte": 1,      # B
-    "proponente": 2, # C
-    "projeto": 4,    # E
-    "numero": 5,     # F
-    "valor": 8,      # I
-    "data": 9,       # J
-    "interno": 11,   # L
+AUTO = {
+    "cliente": 0, "fonte": 1, "contato": 2, "telefone": 3, "email": 4,
+    "proponente": 5, "projeto": 6, "numero": 7, "valor": 10, "data": 11,
+    "condicoes": 14, "interno": 15, "link": LINK_IDX, "tech": TECH_IDX,
 }
-
-
-# ===================================================
-# HELPERS
-# ===================================================
-
-def _norm(s):
-    return " ".join(str(s or "").strip().lower().split())
-
-
-def _digits(s):
-    return re.sub(r"\D", "", str(s or ""))
-
-
-def _valf(cell):
-    """Celula (str BR ou numero do Sheets) -> float arredondado, ou None."""
-    if cell is None or cell == "":
-        return None
-    if isinstance(cell, (int, float)):
-        return round(float(cell), 2)
-    return parse_brl(cell)
-
+SCHEMA = {k: AUTO[k] for k in ("cliente", "projeto", "numero", "valor", "data", "tech")}
+AUTO_INDICES = sorted(AUTO.values())
+PROTECTED_REQUIRED = [(15, 19)]  # P:S, end exclusive
 
 def utf8_stdout():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-# ===================================================
-# LEITURA DA CV
-# ===================================================
+def _pad(row, width=32):
+    return list(row) + [""] * max(0, width - len(row))
 
-def read_cv(sh, ws_name=CV_WS):
-    """Le a aba Controle de Vendas (UNFORMATTED). Valida o contrato de header.
-    Retorna dict com: header bruto, data_rows (list de list), last_data_row (1-based),
-    has_tech (bool), set de deal_ids tecnicos ja presentes, e o estado legado
-    (valores + numero_projeto por linha) pra dedup heuristico."""
-    resp = sh.values_get(
-        f"'{ws_name}'!A1:Z2000",
-        params={"valueRenderOption": "UNFORMATTED_VALUE"},
-    )
+
+def read_state(sh, ws_name):
+    resp = sh.values_get(f"'{ws_name}'!A1:AF2000", params={"valueRenderOption": "UNFORMATTED_VALUE"})
     vals = resp.get("values", [])
     if not vals:
-        raise SystemExit(f"[abort] aba '{ws_name}' veio vazia.")
-    header = vals[0]
-    header_strip = [str(h).strip() for h in header[:N_CV_COLS]]
-    # Coluna A ("Cliente") e editada a mao pelo Ivan (virou ";" em 30/06) — valida
-    # B-R estritamente e deixa a coluna A FLEXIVEL (os dados de A continuam sendo o
-    # cliente). So as colunas que entram em folha precisam casar 1:1.
-    diff = [(i, (header_strip[i] if i < len(header_strip) else "<faltando>"), CV_HEADER_EXPECTED[i])
-            for i in range(1, N_CV_COLS)
-            if i >= len(header_strip) or header_strip[i] != CV_HEADER_EXPECTED[i]]
-    if diff:
-        raise SystemExit(
-            "[abort] header B-R da Controle de Vendas divergiu do contrato (alguem mexeu no layout?).\n"
-            f"  esperado (B-R): {CV_HEADER_EXPECTED[1:]}\n"
-            f"  atual    (B-R): {header_strip[1:]}\n"
-            f"  diffs (idx, atual, esperado): {diff}\n"
-            "  Escrita posicional abortada pra nao por numero errado em folha."
-        )
-    has_tech = len(header) > TECH_COL_IDX and str(header[TECH_COL_IDX]).strip() == TECH_COL_HEADER
-
-    def cell(row, i):
-        return (row + [""] * 40)[i]
-
-    data_rows = []
-    last_data_row = 1  # linha do header
-    seen_deal_ids = set()
-    legacy = []  # [{val, numdigits}] das linhas SEM deal_id
-    for n, row in enumerate(vals[1:], start=2):  # n = numero da linha no sheet (1-based)
-        ar = [cell(row, i) for i in range(N_CV_COLS)]
-        if not any(str(c).strip() for c in ar):
-            continue  # linha em branco (ignora gaps)
-        last_data_row = n
-        data_rows.append(ar)
-        did = str(cell(row, TECH_COL_IDX)).strip() if has_tech else ""
-        if did:
-            seen_deal_ids.add(did)
-        else:
-            legacy.append({
-                "val": _valf(cell(row, COL["valor"])),
-                "num": _digits(cell(row, COL["numero"])),
-                "cli": _norm(cell(row, COL["cliente"])),
-            })
-    return {
-        "header": header,
-        "data_rows": data_rows,
-        "last_data_row": last_data_row,
-        "has_tech": has_tech,
-        "seen_deal_ids": seen_deal_ids,
-        "legacy": legacy,
-    }
-
-
-# ===================================================
-# SELECAO + DEDUP
-# ===================================================
-
-def select_cycle(inc, cycle, all_pending=False):
-    """Filtra Match incluidas pelo ciclo (closedate na janela 21/mes-1 a 20/mes).
-    all_pending=True ignora o ciclo (catch-up de tudo)."""
-    out = []
-    if all_pending:
-        for r in inc:
-            r["_date"] = parse_closedate(r["closedate"])
-            out.append(r)
-        return out
-    start, end = cycle_window(cycle)
-    for r in inc:
-        d = parse_closedate(r["closedate"])
-        if d and start <= d <= end:
-            r["_date"] = d
-            out.append(r)
-    return out
-
-
-def classify(cands, cv):
-    """Separa candidatos em: ja_presente (deal_id batendo), provavel_dup
-    (valor ja na CV em linha legada), novo. Heuristica conservadora: valor igual
-    => provavel duplicata (nao grava sem --force-dup)."""
-    legacy_by_val = {}
-    for L in cv["legacy"]:
-        if L["val"] is not None:
-            legacy_by_val.setdefault(round(L["val"], 2), []).append(L)
-    ja_presente, provavel_dup, novos = [], [], []
-    for r in cands:
-        did = str(r["deal_id"]).strip()
-        if did and did in cv["seen_deal_ids"]:
-            ja_presente.append(r)
+        raise SystemExit(f"[abort] aba {ws_name!r} vazia")
+    actual = [str(x).strip() for x in _pad(vals[0], len(HEADER))[:len(HEADER)]]
+    if actual != HEADER:
+        diff = [(i + 1, actual[i], HEADER[i]) for i in range(len(HEADER)) if actual[i] != HEADER[i]]
+        raise SystemExit(f"[abort] header A:Z divergiu do contrato: {diff}")
+    tech_value = str(_pad(vals[0])[TECH_IDX]).strip()
+    if tech_value and tech_value != TECH_HEADER:
+        raise SystemExit(f"[abort] coluna técnica contém header inesperado: {tech_value!r}")
+    has_tech = tech_value == TECH_HEADER
+    records, last = [], 1
+    for row_number, raw in enumerate(vals[1:], 2):
+        cells = _pad(raw)
+        if not any(str(c).strip() for c in cells[:16]):
             continue
-        v = parse_brl(r["valor_bruto"])
-        vr = round(v, 2) if v is not None else None
-        hit = legacy_by_val.get(vr, []) if vr is not None else []
-        if hit:
-            # reforco: numero do projeto (so digitos) tambem bate?
-            rnum = _digits(r.get("numero_projeto"))
-            num_match = any(L["num"] and rnum and L["num"] == rnum for L in hit)
-            r["_dup_num_match"] = num_match
-            provavel_dup.append(r)
-        else:
-            novos.append(r)
-    return ja_presente, provavel_dup, novos
+        last = row_number
+        records.append({"row_number": row_number, "cells": cells,
+                        "deal_id": str(cells[TECH_IDX]).strip() if has_tech else ""})
+    return {"records": records, "last": last, "has_tech": has_tech}
 
 
-# ===================================================
-# MONTAGEM DA LINHA
-# ===================================================
-
-def build_row(r):
-    """Monta a linha A-S (19 col): A,B,C,E,F,I,J,L preenchidas + S=deal_id.
-    D,G,H,K,M-R em branco (manuais). Valor como numero; data como dd/mm/aaaa
-    (USER_ENTERED converte pra data real no Sheets)."""
-    out = [""] * (N_CV_COLS + 1)  # A..S
-    out[COL["cliente"]] = r["cliente"]
-    out[COL["fonte"]] = map_lei(r["lei_principal"])
-    out[COL["proponente"]] = r["proponente"]
-    out[COL["projeto"]] = r["nome_projeto"]
-    out[COL["numero"]] = r["numero_projeto"]
-    v = parse_brl(r["valor_bruto"])
-    out[COL["valor"]] = v if v is not None else ""
-    d = parse_closedate(r["closedate"])
-    out[COL["data"]] = fmt_date_br(d) if d else ""
-    out[COL["interno"]] = r["interno_externo"]
-    out[TECH_COL_IDX] = str(r["deal_id"]).strip()
+def build_row(deal, row_number=None):
+    out = [""] * 32
+    out[AUTO["cliente"]] = deal.get("cliente", "")
+    out[AUTO["fonte"]] = map_lei(deal.get("lei_principal", ""))
+    out[AUTO["contato"]] = deal.get("nome_contato_proponente", "")
+    out[AUTO["telefone"]] = deal.get("telefone_proponente", "")
+    out[AUTO["email"]] = deal.get("email_proponente", "")
+    out[AUTO["proponente"]] = deal.get("proponente", "")
+    out[AUTO["projeto"]] = deal.get("nome_projeto", "")
+    out[AUTO["numero"]] = deal.get("numero_projeto", "")
+    out[AUTO["valor"]] = money(deal.get("valor_bruto")) or ""
+    out[AUTO["data"]] = fmt_date_br(deal.get("_date")) if deal.get("_date") else fmt_date_br(parse_closedate(deal.get("closedate", "")))
+    out[AUTO["condicoes"]] = deal.get("condicoes_pagamento_financeiro", "")
+    out[AUTO["interno"]] = interno_externo(deal)
+    out[AUTO["link"]] = deal_link(deal)
+    out[TECH_IDX] = str(deal.get("deal_id", ""))
+    if row_number:
+        out[16] = f'=IF(P{row_number}="Externo";K{row_number}*10%;IF(P{row_number}="Interno";K{row_number}*15%;0))'
+        out[17] = f'=IF(OR(P{row_number}="Externo";P{row_number}="Interno");Q{row_number}*(1-12%);0)'
+        out[18] = f'=IF(OR(P{row_number}="Externo";P{row_number}="Interno");R{row_number}*8%;0)'
+        out[19] = f'=IF(OR(P{row_number}="Externo";P{row_number}="Interno");R{row_number}*4%;0)'
     return out
 
 
-# ===================================================
-# COMPLETUDE (F-valid)
-# ===================================================
-
-def completude_gaps(r):
-    """Lista de campos faltando (data/valor/lei/cnpj) pro candidato. cnpj vazio
-    sinaliza deal sem company (nome do cliente vem 'sujo')."""
-    faltas = []
-    if not parse_closedate(r["closedate"]):
-        faltas.append("closedate")
-    v = parse_brl(r["valor_bruto"])
-    if not v or v <= 0:
-        faltas.append("valor")
-    lei = str(r.get("lei_principal", "")).strip()
-    if not lei or lei == "(sem lei preenchida)":
-        faltas.append("lei_principal")
-    if not str(r.get("cnpj", "")).strip():
-        faltas.append("cnpj(sem_company?)")
-    return faltas
+def preflight_protections(sh, ws, service_email):
+    meta = sh.fetch_sheet_metadata(params={"includeGridData": False})
+    sheet = next(s for s in meta["sheets"] if s["properties"]["sheetId"] == ws.id)
+    blocked = []
+    for protected in sheet.get("protectedRanges", []):
+        if protected.get("warningOnly"):
+            continue
+        grid = protected.get("range", {})
+        start, end = grid.get("startColumnIndex", 0), grid.get("endColumnIndex", 10**6)
+        if not any(max(start, a) < min(end, b) for a, b in PROTECTED_REQUIRED):
+            continue
+        editors = protected.get("editors", {})
+        users = {u.lower() for u in editors.get("users", [])}
+        if service_email.lower() not in users and not editors.get("domainUsersCanEdit", False):
+            blocked.append(protected.get("description") or protected.get("protectedRangeId"))
+    if blocked:
+        raise SystemExit(f"[abort] service account sem permissao explicita nas protecoes P:S: {blocked}")
 
 
-# ===================================================
-# ESCRITA (APPEND)
-# ===================================================
+def ensure_tech(sh, ws):
+    ws.update([[TECH_HEADER]], f"{TECH_A1}1", value_input_option="USER_ENTERED")
+    sh.batch_update({"requests": [{"updateDimensionProperties": {
+        "range": {"sheetId": ws.id, "dimension": "COLUMNS", "startIndex": TECH_IDX, "endIndex": TECH_IDX + 1},
+        "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}}]})
 
-def ensure_tech_header(sh, ws, cv):
-    """Garante o header 'deal_id' na coluna tecnica S1 e oculta a coluna S."""
-    if not cv["has_tech"]:
-        ws.update(values=[[TECH_COL_HEADER]], range_name=f"{TECH_COL_A1}1",
-                  value_input_option="USER_ENTERED")
-    # ocultar coluna S (idx 18) via batchUpdate
-    sh.batch_update({
-        "requests": [{
-            "updateDimensionProperties": {
-                "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                          "startIndex": TECH_COL_IDX, "endIndex": TECH_COL_IDX + 1},
-                "properties": {"hiddenByUser": True},
-                "fields": "hiddenByUser",
-            }
-        }]
-    })
-
-
-def append_rows(ws, start_row, rows):
-    """Escreve as linhas a partir de start_row (1-based) no range A:S, USER_ENTERED."""
-    end_row = start_row + len(rows) - 1
-    rng = f"A{start_row}:{TECH_COL_A1}{end_row}"
-    ws.update(values=rows, range_name=rng, value_input_option="USER_ENTERED")
-    return rng
-
-
-def hide_rows(sh, ws, start_row, end_row):
-    """Oculta as linhas start_row..end_row (1-based) — validacao antes de publicar."""
-    sh.batch_update({
-        "requests": [{
-            "updateDimensionProperties": {
-                "range": {"sheetId": ws.id, "dimension": "ROWS",
-                          "startIndex": start_row - 1, "endIndex": end_row},
-                "properties": {"hiddenByUser": True},
-                "fields": "hiddenByUser",
-            }
-        }]
-    })
-
-
-# ===================================================
-# RELATORIO (GATE)
-# ===================================================
-
-def print_gate(cycle, all_pending, inc, cands, ja_presente, provavel_dup, novos, cv, fonte_ts):
-    print("=" * 78)
-    print(f"CONTROLE DE VENDAS — append incremental | ciclo={cycle}"
-          f"{' (ALL-PENDING)' if all_pending else ''}")
-    print(f"consolidado fonte_ts={fonte_ts} | Match Won total={len(inc)} | no ciclo={len(cands)}")
-    print(f"CV atual: {len(cv['data_rows'])} linhas | ultima linha com dados={cv['last_data_row']} | "
-          f"coluna tecnica deal_id={'sim' if cv['has_tech'] else 'nao (1o run)'}")
-    print("-" * 78)
-    print(f"  ja na CV (deal_id):     {len(ja_presente)}")
-    print(f"  provavel duplicata:     {len(provavel_dup)}  (valor ja existe; NAO grava sem --force-dup)")
-    print(f"  NOVOS a appendar:       {len(novos)}")
-    print("=" * 78)
-
-    if provavel_dup:
-        print("\n[PROVAVEL DUPLICATA] (revise: e a mesma venda ou so coincidiu o valor?)")
-        for r in provavel_dup:
-            v = parse_brl(r["valor_bruto"])
-            print(f"  - {str(r['cliente'])[:40]:40} | R$ {v:>12,.2f} | proj={str(r['nome_projeto'])[:24]:24}"
-                  f" | num_bate={'sim' if r.get('_dup_num_match') else 'nao'} | deal {r['deal_id']}")
-
-    if novos:
-        print("\n[NOVOS A APPENDAR]")
-        for r in novos:
-            v = parse_brl(r["valor_bruto"])
-            faltas = completude_gaps(r)
-            flag = f"  ⚠ FALTA: {','.join(faltas)}" if faltas else ""
-            print(f"  + {str(r['cliente'])[:40]:40} | R$ {v:>12,.2f} | {r['interno_externo']:8}"
-                  f" | {fmt_date_br(r.get('_date'))} | deal {r['deal_id']}{flag}")
-    else:
-        print("\n[NOVOS A APPENDAR] nenhum — nada a fazer neste ciclo.")
-
-    # F-valid: completude HubSpot dos Match do ciclo (cobrar antes do dia 20)
-    com_gaps = [(r, completude_gaps(r)) for r in cands]
-    com_gaps = [(r, g) for r, g in com_gaps if g]
-    if com_gaps:
-        print(f"\n[COMPLETUDE] {len(com_gaps)}/{len(cands)} Match do ciclo com dado faltando no HubSpot "
-              "(corrigir antes do dia 20):")
-        for r, g in com_gaps:
-            print(f"  ! {str(r['cliente'])[:40]:40} | faltam: {', '.join(g):28} | deal {r['deal_id']}")
-    print()
-
-
-# ===================================================
-# MAIN
-# ===================================================
 
 def main():
-    utf8_stdout()
-    ap = argparse.ArgumentParser(description="Append incremental na Controle de Vendas oficial (Ivan)")
-    ap.add_argument("--write", action="store_true", help="grava (default: dry-run)")
-    ap.add_argument("--sheet-id", default=OFICIAL_ID_DEFAULT, help="planilha oficial (default: Comissoes 2026)")
-    ap.add_argument("--ws", default=CV_WS, help=f"nome da aba (default: '{CV_WS}'; use outro p/ sandbox de teste)")
-    ap.add_argument("--cycle", default=None, help="ciclo YYYY-MM (default: corrente)")
-    ap.add_argument("--all-pending", action="store_true",
-                    help="ignora ciclo: lista/append de TODOS os Match faltantes (catch-up; use com cuidado)")
-    ap.add_argument("--force-dup", action="store_true",
-                    help="grava tambem os 'provavel duplicata' (valor ja existe). NAO use sem validar.")
-    ap.add_argument("--hidden", action="store_true",
-                    help="oculta as linhas recem-appendadas (validacao antes de publicar dia 20)")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--write", action="store_true")
+    ap.add_argument("--so-append", action="store_true",
+                    help="grava APENAS linha nova; nao toca em linha existente. Use enquanto a "
+                         "reconciliacao por conteudo nao for confiavel.")
+    ap.add_argument("--sheet-id", default=OFICIAL_ID_DEFAULT)
+    ap.add_argument("--ws", default=CV_WS)
+    ap.add_argument("--cycle", default=None)
+    ap.add_argument("--all-pending", action="store_true")
+    ap.add_argument("--source-json", help="fonte congelada somente para integração/sandbox")
     args = ap.parse_args()
-
     cycle = args.cycle or current_cycle()
     if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", cycle):
-        raise SystemExit(f"--cycle invalido: {cycle!r} (esperado YYYY-MM)")
+        raise SystemExit("--cycle deve ser YYYY-MM")
 
     gc = get_sheets_client()
-    rows, fonte_ts = load_consolidado(gc)
-    if len(rows) < MIN_ROWS_GUARD:
-        raise SystemExit(f"[abort] consolidado com {len(rows)} linhas (< {MIN_ROWS_GUARD}) — "
-                         "possivel leitura no meio do sync horario. Nada escrito.")
-    inc, _ = split_vendas(rows)
-    cands = select_cycle(inc, cycle, all_pending=args.all_pending)
-
+    if args.source_json:
+        payload = json.loads(Path(args.source_json).read_text(encoding="utf-8"))
+        source, source_ts = payload["rows"], payload["source_ts"]
+    else:
+        source, source_ts = load_consolidado(gc)
+    if len(source) < MIN_ROWS_GUARD:
+        raise SystemExit(f"[abort] consolidado parcial: {len(source)} < {MIN_ROWS_GUARD}")
+    all_deals = select_match_won(source)
+    # As 4 properties financeiras nao existem no consolidado de producao; a coluna
+    # CONDICOES sai delas. Mesma fonte que a aba da Bia usa, para as duas nao
+    # divergirem. Ver hubspot_financeiro.
+    enriquecer_financeiras(all_deals)
+    cycle_deals = select_cycle(all_deals, cycle, all_pending=args.all_pending)
     sh = gc.open_by_key(args.sheet_id)
-    cv = read_cv(sh, args.ws)
+    ws = sh.worksheet(args.ws)
+    state = read_state(sh, args.ws)
+    matches, ambiguous, unmatched = reconcile(state["records"], all_deals, SCHEMA)
+    append_ids = {str(d["deal_id"]) for d in cycle_deals}
+    to_append = [d for d in unmatched if str(d["deal_id"]) in append_ids]
 
-    ja_presente, provavel_dup, novos = classify(cands, cv)
-    print_gate(cycle, args.all_pending, inc, cands, ja_presente, provavel_dup, novos, cv, fonte_ts)
+    changes, incomplete = [], []
+    for match in matches:
+        deal, record = match["deal"], match["row"]
+        # A lacuna que IMPEDE a linha de existir e a que trava a escrita; a de preenchimento
+        # so vira pendencia. Ate 25/08 os dois caminhos usavam `completeness_gaps`, e como as 4
+        # properties financeiras estao em 0 de 78 desde que foram criadas em 06/08, TODA linha
+        # tinha lacuna e a frente parou de escrever — rodava, relatava e nao gravava nada.
+        # O docstring do proprio `blocking_gaps` ja mandava usar ele para decidir escrita.
+        gaps = completeness_gaps(deal)
+        if blocking_gaps(deal):
+            incomplete.append((deal, gaps, record["row_number"]))
+            continue
+        if gaps:
+            incomplete.append((deal, gaps, record["row_number"]))
+        new = build_row(deal)
+        for idx, old, value in changed_cells(record["cells"], new, AUTO_INDICES, {AUTO["valor"]: money, AUTO["data"]: sheet_date, AUTO["telefone"]: _digits, AUTO["numero"]: text_id, AUTO["tech"]: text_id}):
+            changes.append((record["row_number"], idx, old, value, deal))
+    append_ok = []
+    for deal in to_append:
+        gaps = completeness_gaps(deal)
+        if gaps:
+            incomplete.append((deal, gaps, None))   # vira pendencia de qualquer jeito
+        if not blocking_gaps(deal):
+            append_ok.append(deal)                  # mas so a lacuna bloqueante impede a linha
 
-    a_gravar = list(novos)
-    if args.force_dup:
-        a_gravar += provavel_dup
-        print(f"[--force-dup] incluindo {len(provavel_dup)} provavel(is) duplicata(s) na gravacao.")
+    print(f"Controle de Vendas | ciclo={cycle} | fonte={source_ts} | MATCH won={len(all_deals)}")
+    if args.so_append and changes:
+        # A reconciliacao de linha existente e por CONTEUDO (cliente + projeto + numero + valor +
+        # data), porque nenhuma das 41 linhas tem `deal_id` gravado. Depois que a aba foi ordenada
+        # alfabeticamente em 24/08, ela passou a casar errado: medido em 25/08, um update trocaria
+        # o cliente da linha 8 de "Casa do Alemao" para "Dominos", e F5/G5 trocariam de lugar
+        # entre si. Linha nova nao depende de reconciliacao, entao segue segura.
+        print(f"[--so-append] {len(changes)} update(s) em linha existente DESCARTADO(S): "
+              f"a reconciliacao por conteudo nao esta confiavel desde a reordenacao da aba.")
+        changes = []
+    print(f"existentes={len(state['records'])} matches={len(matches)} ambiguos={len(ambiguous)} updates={len(changes)} append={len(append_ok)} incompletos={len(incomplete)}")
+    for item in ambiguous:
+        print(f"[AMBIGUO] linha {item['row']['row_number']}: {[d['deal_id'] for d in item['candidates']]}")
+    for deal, gaps, row in incomplete:
+        print(f"[PENDENTE] linha={row or 'nova'} deal={deal['deal_id']} faltam={','.join(gaps)} {deal_link(deal)}")
+    for row, idx, old, value, deal in changes[:100]:
+        print(f"[DIFF] {rowcol_to_a1(row, idx+1)} {old!r} -> {value!r} deal={deal['deal_id']}")
 
     if not args.write:
-        print("[dry-run] nada gravado. Revise o gate acima e rode com --write quando aprovado.")
+        print("[dry-run] nada escrito")
         return
-    if not a_gravar:
-        print("[write] 0 linhas novas — nada a gravar (idempotente).")
-        return
-
-    ws = sh.worksheet(args.ws)
-    ensure_tech_header(sh, ws, cv)
-    rows_out = [build_row(r) for r in a_gravar]
-    start = cv["last_data_row"] + 1
-    rng = append_rows(ws, start, rows_out)
-    print(f"[write] OK: {len(rows_out)} linha(s) appendada(s) em {rng}. "
-          f"Linhas existentes preservadas (append puro).")
-    if args.hidden:
-        end = start + len(rows_out) - 1
-        hide_rows(sh, ws, start, end)
-        print(f"[hidden] linhas {start}-{end} OCULTAS pra validacao (reexibir no dia 20).")
-    for r in a_gravar:
-        print(f"   + {str(r['cliente'])[:40]:40} | R$ {parse_brl(r['valor_bruto']):>12,.2f} | deal {r['deal_id']}")
+    assert_fresh_source(source_ts)
+    credentials = getattr(gc, "auth", None) or getattr(getattr(gc, "http_client", None), "auth", None)
+    service_email = getattr(credentials, "service_account_email", "")
+    if not service_email:
+        raise SystemExit("[abort] credencial do service account não identificada")
+    preflight_protections(sh, ws, service_email)
+    ensure_tech(sh, ws)
+    if changes:
+        ws.batch_update([{"range": rowcol_to_a1(row, idx + 1), "values": [[value]]}
+                         for row, idx, _old, value, _deal in changes], value_input_option="USER_ENTERED")
+    if append_ok:
+        start = state["last"] + 1
+        rows = [build_row(deal, start + offset) for offset, deal in enumerate(append_ok)]
+        ws.update(rows, f"A{start}:AF{start + len(rows) - 1}", value_input_option="USER_ENTERED")
+    print(f"[write] OK updates={len(changes)} append={len(append_ok)}")
 
 
 if __name__ == "__main__":
